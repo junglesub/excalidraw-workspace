@@ -23,7 +23,10 @@ export async function POST(req: Request, { params }: Ctx) {
     const mime = file.type || "application/octet-stream";
     const row = storeAttachment(params.id, file.name || "file", mime, buf);
     const others = listAttachments(params.id);
-    return json({ attachment: { ...row, url: attachUrl(row.id) }, attachments: others }, 201);
+    return json(
+      { attachment: { ...row, url: attachUrl(row.id, params.id) }, attachments: others },
+      201,
+    );
   } catch (err) {
     return handleError(err);
   }
@@ -35,7 +38,7 @@ export async function GET(req: Request, { params }: Ctx) {
     requireWrite(params.id, user.id, user.role, false);
     const atts = listAttachments(params.id);
     return json({
-      attachments: atts.map((a) => ({ ...a, url: attachUrl(a.id) })),
+      attachments: atts.map((a) => ({ ...a, url: attachUrl(a.id, params.id) })),
     });
   } catch (err) {
     return handleError(err);

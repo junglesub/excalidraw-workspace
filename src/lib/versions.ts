@@ -1,6 +1,7 @@
 import { getDb, transaction } from "./db";
 import { getDocumentRaw, MAX_VERSIONS, AUTO_SNAPSHOT_INTERVAL_MS, requireWrite } from "./documents";
 import { saveThumbnail, saveThumbnailFromBuffer, removeThumbnail } from "./thumbnails";
+import { compactSceneFiles, gcUnreferencedAttachments } from "./attachments";
 import type { DocumentVersionRow, ExcalidrawScene } from "./types";
 import { emptyScene, jsonToScene, sceneToJson } from "./types";
 import { HttpError } from "./http";
@@ -28,6 +29,7 @@ function insertSnapshot(
   const versionNumber = (maxRow?.m ?? 0) + 1;
   const id = crypto.randomUUID();
   const created = nowIso();
+  const compactScene = compactSceneFiles(docId, scene);
 
   let thumbnailPath: string | null = null;
   if (makeThumbnail) {
@@ -55,7 +57,7 @@ function insertSnapshot(
   db.prepare(
     `INSERT INTO document_versions (id, document_id, version_number, scene, thumbnail_path, created_by, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, docId, versionNumber, sceneToJson(scene), thumbnailPath, createdBy, created);
+  ).run(id, docId, versionNumber, sceneToJson(compactScene), thumbnailPath, createdBy, created);
 
   // Trim to the newest MAX_VERSIONS and GC physical thumbnail files.
   const trimmed = db
@@ -79,6 +81,8 @@ function insertSnapshot(
         ORDER BY created_at DESC, version_number DESC LIMIT ?
      )`,
   ).run(docId, docId, MAX_VERSIONS);
+
+  gcUnreferencedAttachments(docId);
 
   return getVersion(id)!;
 }
@@ -158,9 +162,10 @@ export function restoreVersion(
       throw new HttpError(404, "Version not found");
     }
     const scene = jsonToScene(version.scene);
+    const compact = compactSceneFiles(docId, scene);
     getDb()
       .prepare("UPDATE documents SET scene = ?, updated_at = ? WHERE id = ?")
-      .run(sceneToJson(scene), nowIso(), docId);
+      .run(sceneToJson(compact), nowIso(), docId);
     // Commit the restore as a new current state snapshot.
     const newSnapshot = insertSnapshot(docId, scene, actorId, true);
     // Refresh the document-level thumbnail too.
@@ -168,6 +173,7 @@ export function restoreVersion(
     getDb()
       .prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?")
       .run(thumb.relativePath, docId);
+    gcUnreferencedAttachments(docId);
     return newSnapshot;
   });
 }

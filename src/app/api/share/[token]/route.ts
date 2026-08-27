@@ -1,6 +1,7 @@
 import { handleError, json } from "@/lib/http";
 import { getDocumentRaw } from "@/lib/documents";
 import { jsonToScene } from "@/lib/types";
+import { hydrateSceneFiles } from "@/lib/attachments";
 
 interface Ctx {
   params: { token: string };
@@ -19,13 +20,15 @@ export async function GET(req: Request, { params }: Ctx) {
     if (!doc || doc.deleted_at) {
       return json({ error: "Document not found" }, 404);
     }
+    const rawScene = jsonToScene(doc.scene);
+    const hydratedScene = hydrateSceneFiles(doc.id, rawScene);
     return json({
       document: {
         id: doc.id,
         title: doc.title,
         updated_at: doc.updated_at,
       },
-      scene: jsonToScene(doc.scene),
+      scene: hydratedScene,
       permission: "VIEWER",
       shareToken: params.token,
     });

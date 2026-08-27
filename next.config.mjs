@@ -8,6 +8,7 @@ const nextConfig = {
   // Native/built-in server modules that must not be bundled by webpack.
   experimental: {
     serverComponentsExternalPackages: ["node:sqlite"],
+    instrumentationHook: true,
   },
 };
 

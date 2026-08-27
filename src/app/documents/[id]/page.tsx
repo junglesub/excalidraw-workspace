@@ -19,7 +19,6 @@ export default async function DocumentPage({ params }: PageProps) {
   if (!user) redirect("/login");
 
   const { doc, scene, permission } = getDocumentWithScene(params.id, user.id, user.role, false);
-  const rawScene = jsonToScene(doc.scene);
   const meta = documentToMeta(getDocumentRaw(params.id)!, user.id, user.role, false);
 
   return (
@@ -27,7 +26,7 @@ export default async function DocumentPage({ params }: PageProps) {
       user={toPublicUser(user)}
       docId={params.id}
       initialTitle={meta.title}
-      initialScene={rawScene}
+      initialScene={scene}
       initialUpdatedAt={meta.updated_at}
       permission={meta.permission}
       deleted={!!doc.deleted_at}

@@ -1,6 +1,7 @@
 import { getDb, transaction } from "./db";
 import { getById as getUserId } from "./users";
 import { saveThumbnail } from "./thumbnails";
+import { compactSceneFiles, hydrateSceneFiles, gcUnreferencedAttachments } from "./attachments";
 import type {
   DocumentMeta,
   DocumentRow,
@@ -91,10 +92,17 @@ export function createDocument(userId: string, scene: ExcalidrawScene, title = "
     } catch {
       // ignore
     }
+
+    // 1. Insert document row first so foreign key constraints on attachments.document_id are satisfied
     db.prepare(
       `INSERT INTO documents (id, title, owner_id, scene, thumbnail_path, created_at, updated_at, deleted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`,
-    ).run(id, title, userId, sceneToJson(scene), thumbPath, now, now);
+       VALUES (?, ?, ?, '{}', ?, ?, ?, NULL)`,
+    ).run(id, title, userId, thumbPath, now, now);
+
+    // 2. Compact scene (extracts binary files and inserts attachments)
+    const compactScene = compactSceneFiles(id, scene);
+    db.prepare("UPDATE documents SET scene = ? WHERE id = ?").run(sceneToJson(compactScene), id);
+
     return getDocumentRaw(id)!;
   });
 }
@@ -200,6 +208,7 @@ export function updateScene(
   adminMode = false,
 ): DocumentRow {
   requireWrite(docId, userId, role, adminMode);
+  const compactScene = compactSceneFiles(docId, scene);
   let thumbPath: string | null = null;
   try {
     thumbPath = saveThumbnail(docId, scene).relativePath;
@@ -208,7 +217,8 @@ export function updateScene(
   }
   getDb()
     .prepare("UPDATE documents SET scene = ?, thumbnail_path = COALESCE(?, thumbnail_path), updated_at = ? WHERE id = ?")
-    .run(sceneToJson(scene), thumbPath, new Date().toISOString(), docId);
+    .run(sceneToJson(compactScene), thumbPath, new Date().toISOString(), docId);
+  gcUnreferencedAttachments(docId);
   return getDocumentRaw(docId)!;
 }
 
@@ -219,7 +229,9 @@ export function getDocumentWithScene(
   adminMode: boolean,
 ) {
   const { doc, permission } = requireRead(docId, userId, role, adminMode);
-  return { doc, scene: jsonToScene(doc.scene), permission };
+  const rawScene = jsonToScene(doc.scene);
+  const hydratedScene = hydrateSceneFiles(docId, rawScene);
+  return { doc, scene: hydratedScene, permission };
 }
 
 export function softDelete(docId: string, userId: string, role: "USER" | "ADMIN"): void {

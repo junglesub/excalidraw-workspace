@@ -131,14 +131,15 @@ CREATE TABLE IF NOT EXISTS document_versions (
 CREATE INDEX IF NOT EXISTS idx_versions_doc ON document_versions(document_id, version_number);
 
 CREATE TABLE IF NOT EXISTS attachments (
-  id          TEXT PRIMARY KEY,
+  id          TEXT NOT NULL,
   document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   file_name   TEXT NOT NULL,
   file_size   INTEGER NOT NULL,
   mime_type   TEXT NOT NULL,
   file_path   TEXT NOT NULL,
   sha256      TEXT,
-  created_at  TEXT NOT NULL
+  created_at  TEXT NOT NULL,
+  PRIMARY KEY (document_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_doc ON attachments(document_id);
 
@@ -156,4 +157,30 @@ CREATE INDEX IF NOT EXISTS idx_share_links_token ON share_links(token);
 
 export function initializeSchema(database: DatabaseSync): void {
   database.exec(SCHEMA_SQL);
+  try {
+    const info = database.prepare("PRAGMA table_info(attachments)").all() as { name: string; pk: number }[];
+    const docIdCol = info.find((c) => c.name === "document_id");
+    // If table was created with old single PK (pk=0 for document_id), migrate to composite PK (document_id, id)
+    if (info.length > 0 && docIdCol && docIdCol.pk === 0) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS attachments_v2 (
+          id          TEXT NOT NULL,
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          file_name   TEXT NOT NULL,
+          file_size   INTEGER NOT NULL,
+          mime_type   TEXT NOT NULL,
+          file_path   TEXT NOT NULL,
+          sha256      TEXT,
+          created_at  TEXT NOT NULL,
+          PRIMARY KEY (document_id, id)
+        );
+        INSERT OR IGNORE INTO attachments_v2 SELECT * FROM attachments;
+        DROP TABLE attachments;
+        ALTER TABLE attachments_v2 RENAME TO attachments;
+        CREATE INDEX IF NOT EXISTS idx_attachments_doc ON attachments(document_id);
+      `);
+    }
+  } catch (err) {
+    console.error("Failed to migrate attachments table schema:", err);
+  }
 }
