@@ -56,9 +56,10 @@ export function permanentDelete(
 
   // GC physical files.
   const cfg = config();
+  const dataDir = path.resolve(cfg.dataDir);
   for (const a of attachmentRows) {
-    const abs = path.join(cfg.dataDir, a.file_path);
-    if (abs.startsWith(cfg.dataDir + path.sep)) {
+    const abs = path.resolve(cfg.dataDir, a.file_path);
+    if (abs.startsWith(dataDir + path.sep)) {
       rmSync(abs, { force: true });
     }
   }
@@ -71,9 +72,10 @@ export function permanentDelete(
   removeThumbnail(`thumbnails/${docId}.png`);
 
   // Remove any leftover per-document attachment directory.
-  const docDir = path.join(cfg.attachmentsDir, docId);
-  if (docDir.startsWith(cfg.attachmentsDir)) {
-    rmSync(docDir, { recursive: true, force: true });
+  const resolvedDocDir = path.resolve(cfg.attachmentsDir, docId);
+  const resolvedAttachmentsDir = path.resolve(cfg.attachmentsDir);
+  if (resolvedDocDir.startsWith(resolvedAttachmentsDir + path.sep)) {
+    rmSync(resolvedDocDir, { recursive: true, force: true });
   }
 }
 

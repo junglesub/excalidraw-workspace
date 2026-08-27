@@ -2,12 +2,15 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { existsSync, readFileSync } from "node:fs";
 import { resetDb } from "@/lib/db";
 import { resetConfig } from "@/lib/config";
+import { createUser, createSession } from "@/lib/users";
 import {
   renderScenePng,
   saveThumbnail,
   saveThumbnailFromBuffer,
   removeThumbnail,
 } from "@/lib/thumbnails";
+import { GET as getThumbnailRoute } from "@/app/api/thumbnails/[...path]/route";
+import { SESSION_COOKIE } from "@/lib/http";
 import { emptyScene } from "@/lib/types";
 
 describe("Thumbnail Rendering and Storage", () => {
@@ -53,5 +56,16 @@ describe("Thumbnail Rendering and Storage", () => {
     expect(existsSync(result.absolutePath)).toBe(true);
 
     removeThumbnail(result.relativePath);
+  });
+
+  it("should reject path traversal in GET /api/thumbnails/[...path]", async () => {
+    const user = createUser("alice", "pass123", "USER");
+    const session = createSession(user.id);
+
+    const req = new Request("http://localhost/api/thumbnails/../app.db", {
+      headers: { cookie: `${SESSION_COOKIE}=${session.token}` },
+    });
+    const res = await getThumbnailRoute(req, { params: Promise.resolve({ path: ["..", "app.db"] }) });
+    expect(res.status).toBe(403);
   });
 });

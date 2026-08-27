@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { resetDb } from "@/lib/db";
 import { resetConfig } from "@/lib/config";
-import { createUser } from "@/lib/users";
+import { createUser, createSession } from "@/lib/users";
 import { createDocument, addMember, removeMember, listMembers, resolvePermission } from "@/lib/documents";
 import {
   createOrReplaceShareLink,
@@ -12,6 +12,9 @@ import {
   deactivateShareLink,
   summarizeShareLink,
 } from "@/lib/share_links";
+import { GET as getMembersRoute } from "@/app/api/documents/[id]/share/members/route";
+import { POST as postShareLinkRoute } from "@/app/api/documents/[id]/share/link/route";
+import { SESSION_COOKIE } from "@/lib/http";
 import { emptyScene } from "@/lib/types";
 
 describe("Sharing and Share Links", () => {
@@ -36,6 +39,45 @@ describe("Sharing and Share Links", () => {
     removeMember(doc.id, member.id);
     expect(resolvePermission(doc.id, member.id, "USER")).toBeUndefined();
     expect(listMembers(doc.id)).toHaveLength(0);
+  });
+
+  it("should enforce authorization on GET /api/documents/[id]/share/members", async () => {
+    const owner = createUser("alice", "pass123", "USER");
+    const outsider = createUser("eve", "pass123", "USER");
+    const doc = createDocument(owner.id, emptyScene(), "Secret Document");
+
+    // Outsider trying to enumerate members must get 403 Forbidden
+    const outsiderSession = createSession(outsider.id);
+    const req = new Request(`http://localhost/api/documents/${doc.id}/share/members`, {
+      headers: { cookie: `${SESSION_COOKIE}=${outsiderSession.token}` },
+    });
+    const res = await getMembersRoute(req, { params: Promise.resolve({ id: doc.id }) });
+    expect(res.status).toBe(403);
+
+    // Owner can successfully list members
+    const ownerSession = createSession(owner.id);
+    const ownerReq = new Request(`http://localhost/api/documents/${doc.id}/share/members`, {
+      headers: { cookie: `${SESSION_COOKIE}=${ownerSession.token}` },
+    });
+    const ownerRes = await getMembersRoute(ownerReq, { params: Promise.resolve({ id: doc.id }) });
+    expect(ownerRes.status).toBe(200);
+  });
+
+  it("should reject invalid expiration date on POST /api/documents/[id]/share/link with 400", async () => {
+    const owner = createUser("alice", "pass123", "USER");
+    const doc = createDocument(owner.id, emptyScene(), "Link Doc");
+    const ownerSession = createSession(owner.id);
+
+    const req = new Request(`http://localhost/api/documents/${doc.id}/share/link`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        cookie: `${SESSION_COOKIE}=${ownerSession.token}`,
+      },
+      body: JSON.stringify({ expiresAt: "invalid-date-string" }),
+    });
+    const res = await postShareLinkRoute(req, { params: Promise.resolve({ id: doc.id }) });
+    expect(res.status).toBe(400);
   });
 
   it("should create active public share link and summarize URL", () => {

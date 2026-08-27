@@ -9,8 +9,10 @@ export async function POST(req: Request) {
   if (token) {
     deleteSession(token);
   }
-  cookies().set(SESSION_COOKIE, "", {
+  const cookieStore = await cookies();
+  cookieStore.set(SESSION_COOKIE, "", {
     httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
     maxAge: 0,

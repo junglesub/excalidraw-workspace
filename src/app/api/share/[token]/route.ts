@@ -4,7 +4,7 @@ import { jsonToScene } from "@/lib/types";
 import { hydrateSceneFiles } from "@/lib/attachments";
 
 interface Ctx {
-  params: { token: string };
+  params: Promise<{ token: string }>;
 }
 
 /**
@@ -13,9 +13,10 @@ interface Ctx {
  */
 export async function GET(req: Request, { params }: Ctx) {
   try {
+    const { token } = await params;
     // Re-export guard from share_links.
     const { requireValidShareToken: requireToken } = await import("@/lib/share_links");
-    const link = await requireToken(params.token);
+    const link = await requireToken(token);
     const doc = getDocumentRaw(link.document_id);
     if (!doc || doc.deleted_at) {
       return json({ error: "Document not found" }, 404);
@@ -30,7 +31,7 @@ export async function GET(req: Request, { params }: Ctx) {
       },
       scene: hydratedScene,
       permission: "VIEWER",
-      shareToken: params.token,
+      shareToken: token,
     });
   } catch (err) {
     return handleError(err);

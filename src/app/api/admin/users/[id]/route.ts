@@ -2,14 +2,15 @@ import { handleError, json, jsonError, readJson, requireAdmin, requireUser } fro
 import { getById, setActive, setPassword, deleteUser, toPublicUser, deleteSessionsForUser } from "@/lib/users";
 
 interface Ctx {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function PATCH(req: Request, { params }: Ctx) {
   try {
+    const { id } = await params;
     const admin = requireUser(req);
     requireAdmin(admin);
-    const target = getById(params.id);
+    const target = getById(id);
     if (!target) return jsonError("User not found", 404);
     if (target.id === admin.id) {
       return jsonError("You cannot disable or change your own account here", 400);
@@ -31,9 +32,10 @@ export async function PATCH(req: Request, { params }: Ctx) {
 
 export async function DELETE(req: Request, { params }: Ctx) {
   try {
+    const { id } = await params;
     const admin = requireUser(req);
     requireAdmin(admin);
-    const target = getById(params.id);
+    const target = getById(id);
     if (!target) return jsonError("User not found", 404);
     if (target.id === admin.id) {
       return jsonError("You cannot delete your own account", 400);

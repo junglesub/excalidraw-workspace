@@ -3,14 +3,15 @@ import { requireWrite } from "@/lib/documents";
 import { storeAttachment, listAttachments, attachUrl } from "@/lib/attachments";
 
 interface Ctx {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 /** Upload an attachment (image) linked to a document. Requires write access. */
 export async function POST(req: Request, { params }: Ctx) {
   try {
+    const { id } = await params;
     const user = requireUser(req);
-    requireWrite(params.id, user.id, user.role, false);
+    requireWrite(id, user.id, user.role, false);
     const form = await req.formData();
     const file = form.get("file");
     if (!(file instanceof File)) {
@@ -21,10 +22,10 @@ export async function POST(req: Request, { params }: Ctx) {
       return jsonError("Empty file", 400);
     }
     const mime = file.type || "application/octet-stream";
-    const row = storeAttachment(params.id, file.name || "file", mime, buf);
-    const others = listAttachments(params.id);
+    const row = storeAttachment(id, file.name || "file", mime, buf);
+    const others = listAttachments(id);
     return json(
-      { attachment: { ...row, url: attachUrl(row.id, params.id) }, attachments: others },
+      { attachment: { ...row, url: attachUrl(row.id, id) }, attachments: others },
       201,
     );
   } catch (err) {
@@ -34,11 +35,12 @@ export async function POST(req: Request, { params }: Ctx) {
 
 export async function GET(req: Request, { params }: Ctx) {
   try {
+    const { id } = await params;
     const user = requireUser(req);
-    requireWrite(params.id, user.id, user.role, false);
-    const atts = listAttachments(params.id);
+    requireWrite(id, user.id, user.role, false);
+    const atts = listAttachments(id);
     return json({
-      attachments: atts.map((a) => ({ ...a, url: attachUrl(a.id, params.id) })),
+      attachments: atts.map((a) => ({ ...a, url: attachUrl(a.id, id) })),
     });
   } catch (err) {
     return handleError(err);

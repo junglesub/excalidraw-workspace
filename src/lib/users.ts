@@ -82,22 +82,34 @@ export function countUsers(): number {
   return row.c;
 }
 
-/**
- * Verify a stored admin-bootstrap argument. When both ADMIN_USERNAME and
- * ADMIN_PASSWORD are provided and no ADMIN account exists yet, create it.
- * An already-existing admin is never overwritten by env changes.
- */
 export function bootstrapAdmin(): void {
   const cfg = config();
-  if (!cfg.adminUsername || !cfg.adminPassword) {
-    return;
-  }
-  const existing = getByUsername(cfg.adminUsername);
-  if (existing && existing.role === "ADMIN") {
-    return; // never overwrite
-  }
+  const isProd = process.env.NODE_ENV === "production";
+
   if (hasAnyAdmin()) {
     return; // an admin already exists elsewhere; do not create a second bootstrap admin
+  }
+
+  if (isProd) {
+    if (!cfg.adminUsername || !cfg.adminPassword) {
+      throw new Error(
+        "Production bootstrap error: ADMIN_USERNAME and ADMIN_PASSWORD environment variables are required to bootstrap the initial admin account.",
+      );
+    }
+    if (cfg.adminPassword === "admin1234!" || cfg.adminPassword.length < 8) {
+      throw new Error(
+        "Production bootstrap error: ADMIN_PASSWORD is using an insecure default or is shorter than 8 characters.",
+      );
+    }
+  } else {
+    if (!cfg.adminUsername || !cfg.adminPassword) {
+      return;
+    }
+  }
+
+  const existing = getByUsername(cfg.adminUsername);
+  if (existing && existing.role === "ADMIN") {
+    return;
   }
   createUser(cfg.adminUsername, cfg.adminPassword, "ADMIN");
 }
@@ -139,6 +151,14 @@ export function deleteSession(token: string): void {
 
 export function deleteSessionsForUser(userId: string): void {
   getDb().prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+}
+
+export function deleteSessionsForUserExcept(userId: string, keepToken?: string): void {
+  if (keepToken) {
+    getDb().prepare("DELETE FROM sessions WHERE user_id = ? AND token != ?").run(userId, keepToken);
+  } else {
+    getDb().prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+  }
 }
 
 export function deleteExpiredSessions(): void {

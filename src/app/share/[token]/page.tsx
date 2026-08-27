@@ -4,7 +4,7 @@ import ShareViewer from "./ShareViewer";
 export const dynamic = "force-dynamic";
 
 interface PageProps {
-  params: { token: string };
+  params: Promise<{ token: string }>;
 }
 
 /**
@@ -12,9 +12,10 @@ interface PageProps {
  * against the API (so an expired/invalid link shows a friendly message), and
  * the document is rendered in a read-only viewer.
  */
-export default function SharePage({ params }: PageProps) {
-  if (!params?.token) {
+export default async function SharePage({ params }: PageProps) {
+  const { token } = await params;
+  if (!token) {
     redirect("/");
   }
-  return <ShareViewer token={params.token} />;
+  return <ShareViewer token={token} />;
 }

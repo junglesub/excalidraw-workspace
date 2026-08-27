@@ -1,5 +1,5 @@
-import { handleError, json, readJson, requireUser } from "@/lib/http";
-import { toPublicUser, getById, setPassword } from "@/lib/users";
+import { handleError, json, readJson, requireUser, findSessionToken } from "@/lib/http";
+import { getById, setPassword, deleteSessionsForUserExcept } from "@/lib/users";
 import { verifyPassword } from "@/lib/passwords";
 
 export async function PATCH(req: Request) {
@@ -15,6 +15,8 @@ export async function PATCH(req: Request) {
       return json({ error: "Current password is incorrect" }, 401);
     }
     setPassword(user.id, next);
+    const currentToken = findSessionToken(req);
+    deleteSessionsForUserExcept(user.id, currentToken);
     return json({ ok: true });
   } catch (err) {
     return handleError(err);

@@ -8,7 +8,7 @@ import type { AttachmentRow } from "@/lib/types";
 import { statSync } from "node:fs";
 
 interface Ctx {
-  params: { attachmentId: string };
+  params: Promise<{ attachmentId: string }>;
 }
 
 /**
@@ -21,7 +21,7 @@ interface Ctx {
  */
 export async function GET(req: Request, { params }: Ctx) {
   try {
-    const attachmentId = params.attachmentId;
+    const { attachmentId } = await params;
     if (!SAFE_ID_REGEX.test(attachmentId)) {
       return new Response("Invalid attachment ID", { status: 400 });
     }

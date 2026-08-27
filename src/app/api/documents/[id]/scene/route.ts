@@ -7,7 +7,7 @@ import { saveThumbnailFromBuffer } from "@/lib/thumbnails";
 export const dynamic = "force-dynamic";
 
 interface Ctx {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 /**
@@ -18,6 +18,7 @@ interface Ctx {
  */
 export async function PUT(req: Request, { params }: Ctx) {
   try {
+    const { id } = await params;
     const user = requireUser(req);
     const adminMode = adminModeFrom(req, user);
     const body = await readJson(req);
@@ -25,23 +26,23 @@ export async function PUT(req: Request, { params }: Ctx) {
       return jsonError("scene is required", 400);
     }
     const scene = jsonToScene(JSON.stringify(body.scene));
-    const doc = updateScene(params.id, scene, user.id, user.role, adminMode);
+    const doc = updateScene(id, scene, user.id, user.role, adminMode);
 
     let thumbBuf: Buffer | null = null;
     const thumbnailBase64 = typeof body.thumbnailBase64 === "string" ? body.thumbnailBase64 : null;
     if (thumbnailBase64 && thumbnailBase64.includes("base64,")) {
       const b64 = thumbnailBase64.split("base64,")[1];
       thumbBuf = Buffer.from(b64, "base64");
-      saveThumbnailFromBuffer(params.id, thumbBuf);
+      saveThumbnailFromBuffer(id, thumbBuf);
     }
 
     let snapshotCreated = false;
     const wantSnapshot = body.snapshot === true;
-    if (wantSnapshot && snapshotDueForAutoSave(params.id, AUTO_INTERVAL)) {
-      createSnapshotFromScene(params.id, scene, user.id, true, thumbBuf);
+    if (wantSnapshot && snapshotDueForAutoSave(id, AUTO_INTERVAL)) {
+      createSnapshotFromScene(id, scene, user.id, true, thumbBuf);
       snapshotCreated = true;
     }
-    return json({ ok: true, snapshotCreated, updatedAt: getDocumentRaw(params.id)!.updated_at });
+    return json({ ok: true, snapshotCreated, updatedAt: getDocumentRaw(id)!.updated_at });
   } catch (err) {
     return handleError(err);
   }

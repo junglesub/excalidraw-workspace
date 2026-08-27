@@ -234,7 +234,7 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
     const reqA = new Request(`http://localhost/api/attachments/${sameFileId}?docId=${docA.id}`, {
       headers: { cookie: `${SESSION_COOKIE}=${session.token}` },
     });
-    const resA = await getAttachmentRoute(reqA, { params: { attachmentId: sameFileId } });
+    const resA = await getAttachmentRoute(reqA, { params: Promise.resolve({ attachmentId: sameFileId }) });
     expect(resA.status).toBe(200);
     const bodyA = Buffer.from(await resA.arrayBuffer());
     expect(bodyA.toString("utf-8")).toBe("bytes-A");
@@ -243,7 +243,7 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
     const reqB = new Request(`http://localhost/api/attachments/${sameFileId}?docId=${docB.id}`, {
       headers: { cookie: `${SESSION_COOKIE}=${session.token}` },
     });
-    const resB = await getAttachmentRoute(reqB, { params: { attachmentId: sameFileId } });
+    const resB = await getAttachmentRoute(reqB, { params: Promise.resolve({ attachmentId: sameFileId }) });
     expect(resB.status).toBe(200);
     const bodyB = Buffer.from(await resB.arrayBuffer());
     expect(bodyB.toString("utf-8")).toBe("bytes-B");
@@ -476,10 +476,10 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
     expect(() => createDocument(user.id, corruptPrefixScene, "Corrupt Prefix")).toThrow();
   });
 
-  it("should have experimental.instrumentationHook enabled in next.config and executable register hook", async () => {
+  it("should have serverExternalPackages configured in next.config and executable register hook", async () => {
     const nextConfigModule = await import("../next.config.mjs");
     const nextConfig = nextConfigModule.default;
-    expect(nextConfig.experimental?.instrumentationHook).toBe(true);
+    expect(nextConfig.serverExternalPackages).toContain("node:sqlite");
 
     const prevRuntime = process.env.NEXT_RUNTIME;
     try {

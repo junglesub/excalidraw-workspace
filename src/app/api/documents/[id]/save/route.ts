@@ -7,7 +7,7 @@ import { saveThumbnailFromBuffer } from "@/lib/thumbnails";
 export const dynamic = "force-dynamic";
 
 interface Ctx {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 /**
@@ -16,6 +16,7 @@ interface Ctx {
  */
 export async function POST(req: Request, { params }: Ctx) {
   try {
+    const { id } = await params;
     const user = requireUser(req);
     const adminMode = adminModeFrom(req, user);
     const body = await readJson(req);
@@ -23,18 +24,18 @@ export async function POST(req: Request, { params }: Ctx) {
       return jsonError("scene is required", 400);
     }
     const scene = jsonToScene(JSON.stringify(body.scene));
-    updateScene(params.id, scene, user.id, user.role, adminMode);
+    updateScene(id, scene, user.id, user.role, adminMode);
 
     let thumbBuf: Buffer | null = null;
     const thumbnailBase64 = typeof body.thumbnailBase64 === "string" ? body.thumbnailBase64 : null;
     if (thumbnailBase64 && thumbnailBase64.includes("base64,")) {
       const b64 = thumbnailBase64.split("base64,")[1];
       thumbBuf = Buffer.from(b64, "base64");
-      saveThumbnailFromBuffer(params.id, thumbBuf);
+      saveThumbnailFromBuffer(id, thumbBuf);
     }
 
-    const snapshot = createSnapshotFromScene(params.id, scene, user.id, true, thumbBuf);
-    const versions = listVersions(params.id);
+    const snapshot = createSnapshotFromScene(id, scene, user.id, true, thumbBuf);
+    const versions = listVersions(id);
     return json({ ok: true, snapshot, versions });
   } catch (err) {
     return handleError(err);

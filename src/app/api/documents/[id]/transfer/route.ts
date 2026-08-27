@@ -2,11 +2,12 @@ import { handleError, json, jsonError, readJson, requireUser, adminModeFrom } fr
 import { transferOwnership, documentToMeta, getDocumentRaw } from "@/lib/documents";
 
 interface Ctx {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function POST(req: Request, { params }: Ctx) {
   try {
+    const { id } = await params;
     const user = requireUser(req);
     const adminMode = adminModeFrom(req, user);
     const body = await readJson(req);
@@ -18,7 +19,7 @@ export async function POST(req: Request, { params }: Ctx) {
       targetUserId = u.id;
     }
     if (!targetUserId) return jsonError("userId or username is required", 400);
-    const doc = transferOwnership(params.id, targetUserId, user.id, user.role);
+    const doc = transferOwnership(id, targetUserId, user.id, user.role);
     return json({ document: documentToMeta(getDocumentRaw(doc.id)!, user.id, user.role, adminMode) });
   } catch (err) {
     return handleError(err);

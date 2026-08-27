@@ -6,7 +6,8 @@ import { getUserBySessionToken } from "@/lib/users";
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const token = cookies().get(SESSION_COOKIE)?.value;
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE)?.value;
   if (token) {
     const user = getUserBySessionToken(token);
     if (user && user.is_active === 1) {

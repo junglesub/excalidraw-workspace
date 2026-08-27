@@ -6,12 +6,10 @@ import type {
   AppState,
   BinaryFiles,
   ExcalidrawInitialDataState,
-} from "@excalidraw/excalidraw/types/types";
-import type { ExcalidrawElement } from "@excalidraw/excalidraw/types/element/types";
+} from "@excalidraw/excalidraw/types";
+import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import { useCallback, useMemo, useRef } from "react";
 import type { ExcalidrawScene } from "@/lib/types";
-
-// Styles are bundled by the package; no separate CSS import needed for v0.17.
 
 const BaseExcalidraw = dynamic(
   () => import("@excalidraw/excalidraw").then((m) => m.Excalidraw),
@@ -59,7 +57,7 @@ export default function ExcalidrawCanvas({
         : []) as readonly ExcalidrawElement[],
       appState:
         initialScene.appState && typeof initialScene.appState === "object"
-          ? (initialScene.appState as AppState)
+          ? (initialScene.appState as unknown as Partial<AppState>)
           : {},
       files: (initialScene.files as BinaryFiles) || {},
     };

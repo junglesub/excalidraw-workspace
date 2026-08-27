@@ -6,7 +6,7 @@ import { config } from "@/lib/config";
 export const dynamic = "force-dynamic";
 
 interface Ctx {
-  params: { path: string[] };
+  params: Promise<{ path: string[] }>;
 }
 
 /**
@@ -16,21 +16,25 @@ interface Ctx {
  */
 export async function GET(req: Request, { params }: Ctx) {
   try {
+    const { path: pathSegments } = await params;
     requireUser(req);
     const cfg = config();
-    const rel = (params.path || []).join("/");
+    const rel = (pathSegments || []).join("/");
     const safe = path.normalize(rel);
     const abs =
       safe.startsWith("thumbnails" + path.sep) || safe.startsWith("thumbnails/")
         ? path.join(cfg.dataDir, safe)
         : path.join(cfg.thumbnailsDir, safe);
-    if (!abs.startsWith(cfg.thumbnailsDir) || path.extname(abs) !== ".png") {
+    const resolvedAbs = path.resolve(abs);
+    const resolvedThumbnailsDir = path.resolve(cfg.thumbnailsDir);
+
+    if (!resolvedAbs.startsWith(resolvedThumbnailsDir + path.sep) || path.extname(resolvedAbs) !== ".png") {
       return new Response("Forbidden", { status: 403 });
     }
-    if (!existsSync(abs)) {
+    if (!existsSync(resolvedAbs)) {
       return new Response("Not found", { status: 404 });
     }
-    const bytes = readFileSync(abs);
+    const bytes = readFileSync(resolvedAbs);
     return new Response(new Uint8Array(bytes), {
       status: 200,
       headers: {

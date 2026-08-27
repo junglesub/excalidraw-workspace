@@ -33,8 +33,10 @@ export async function POST(req: Request) {
       return jsonError("Invalid credentials", 401);
     }
     const { token } = createSession(user.id);
-    cookies().set(SESSION_COOKIE, token, {
+    const cookieStore = await cookies();
+    cookieStore.set(SESSION_COOKIE, token, {
       httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
       maxAge: 60 * 60 * 24 * 7,

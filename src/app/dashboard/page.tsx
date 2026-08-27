@@ -7,7 +7,8 @@ import DashBoardClient from "./DashboardClient";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const token = cookies().get(SESSION_COOKIE)?.value;
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE)?.value;
   if (!token) redirect("/login");
   const user = getUserBySessionToken(token);
   if (!user) redirect("/login");

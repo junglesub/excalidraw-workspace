@@ -30,13 +30,17 @@ export function loadConfig(): AppConfig {
   mkdirSync(attachmentsDir, { recursive: true });
   mkdirSync(thumbnailsDir, { recursive: true });
 
+  const isProd = process.env.NODE_ENV === "production";
+  const adminUsername = process.env.ADMIN_USERNAME || (isProd ? undefined : "admin");
+  const adminPassword = process.env.ADMIN_PASSWORD || (isProd ? undefined : "admin1234!");
+
   return {
     dataDir,
     dbPath,
     attachmentsDir,
     thumbnailsDir,
-    adminUsername: process.env.ADMIN_USERNAME || "admin",
-    adminPassword: process.env.ADMIN_PASSWORD || "admin1234!",
+    adminUsername,
+    adminPassword,
     sessionSecret:
       process.env.SESSION_SECRET ||
       `pew-default-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
