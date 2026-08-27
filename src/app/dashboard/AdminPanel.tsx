@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/client";
+import { StoragePanel } from "./StoragePanel";
 import type { DocMeta, UserMeta } from "./DashboardClient";
 
 interface Props {
@@ -74,7 +75,13 @@ export function AdminPanel({
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-10">
+      {/* Storage & Database Maintenance Section */}
+      <section className="bg-white border rounded-lg p-5">
+        <StoragePanel />
+      </section>
+
+      {/* User Management Section */}
       <section>
         <h2 className="text-lg font-semibold mb-3">System Users</h2>
         <form
@@ -146,7 +153,7 @@ export function AdminPanel({
                     </button>
                     <button onClick={() => deleteUser(u.id)} className="text-red-600 hover:underline">
                       Delete
-</button>
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -155,6 +162,7 @@ export function AdminPanel({
         </div>
       </section>
 
+      {/* Document Overview Section */}
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-lg font-semibold">All Documents ({docs.length})</h2>

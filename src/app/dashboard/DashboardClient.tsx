@@ -409,9 +409,6 @@ export default function DashBoardClient({ initialUser }: Props) {
       <footer className="mt-12 pt-6 border-t border-gray-200 flex flex-col sm:flex-row items-center justify-between text-xs text-gray-400 gap-2">
         <div className="flex items-center gap-2">
           <span>Private Excalidraw Workspace</span>
-          <span>·</span>
-          <span>v1.0.0</span>
-          <span>·</span>
           <span className="font-mono text-[11px] bg-gray-100 px-1.5 py-0.5 rounded text-gray-500">
             Build: {process.env.NEXT_PUBLIC_BUILD_VERSION || "dev"}
           </span>

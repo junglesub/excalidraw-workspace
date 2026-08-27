@@ -97,7 +97,7 @@ export default function LoginForm() {
             </a>
           </div>
           <div className="text-[11px] text-gray-400">
-            v1.0.0 · Build: {process.env.NEXT_PUBLIC_BUILD_VERSION || "dev"}
+            Build: {process.env.NEXT_PUBLIC_BUILD_VERSION || "dev"}
           </div>
         </footer>
       </div>
