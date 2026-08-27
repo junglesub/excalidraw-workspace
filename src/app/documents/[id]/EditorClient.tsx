@@ -42,6 +42,7 @@ interface Props {
   docId: string;
   initialTitle: string;
   initialScene: ExcalidrawScene;
+  initialUpdatedAt?: string;
   permission: Permission;
   deleted: boolean;
 }
@@ -54,6 +55,7 @@ export default function EditorClient({
   docId,
   initialTitle,
   initialScene,
+  initialUpdatedAt,
   permission: initialPermission,
   deleted: initialDeleted,
 }: Props) {
@@ -135,26 +137,33 @@ export default function EditorClient({
     if (isOwner) loadShare();
   }, [loadVersions, loadShare, isOwner]);
 
-  // Load unsaved local draft if newer than initialScene
+  // Load unsaved local draft only if strictly newer than cloud/server initialUpdatedAt
   useEffect(() => {
     try {
       const localDraft = localStorage.getItem(`excalidraw_draft_${docId}`);
       if (localDraft) {
         const parsed = JSON.parse(localDraft);
-        if (parsed && Array.isArray(parsed.elements) && parsed.elements.length > 0) {
-          const initialCount = Array.isArray(initialScene.elements) ? initialScene.elements.length : 0;
-          if (parsed.elements.length >= initialCount) {
-            sceneRef.current = parsed;
-            setInitialCanvasScene(parsed);
+        const draftScene = parsed?.scene || parsed;
+        const draftTimestamp = typeof parsed?.updatedAt === "number" ? parsed.updatedAt : 0;
+        const serverTimestamp = initialUpdatedAt ? new Date(initialUpdatedAt).getTime() : 0;
+
+        // If server is newer or equal, cloud wins and stale local draft is cleared
+        if (serverTimestamp && draftTimestamp && serverTimestamp >= draftTimestamp) {
+          localStorage.removeItem(`excalidraw_draft_${docId}`);
+        } else if (draftScene && Array.isArray(draftScene.elements) && draftScene.elements.length > 0) {
+          // If local draft is strictly newer than server timestamp (unsaved work from network drop/crash)
+          if (!serverTimestamp || draftTimestamp > serverTimestamp) {
+            sceneRef.current = draftScene;
+            setInitialCanvasScene(draftScene);
             setCanvasKey((k) => k + 1);
-            setStatus("Restored unsaved draft from local storage", "saved");
+            setStatus("Restored unsaved local draft", "saved");
           }
         }
       }
     } catch {
       // ignore
     }
-  }, [docId, initialScene, setStatus]);
+  }, [docId, initialScene, initialUpdatedAt, setStatus]);
 
   // Flush unsaved changes on beforeunload
   useEffect(() => {
@@ -251,9 +260,12 @@ export default function EditorClient({
       sceneRef.current = s;
       isDirtyRef.current = true;
 
-      // 1. Immediately cache in localStorage
+      // 1. Immediately cache in localStorage with timestamp
       try {
-        localStorage.setItem(`excalidraw_draft_${docId}`, JSON.stringify(s));
+        localStorage.setItem(
+          `excalidraw_draft_${docId}`,
+          JSON.stringify({ scene: s, updatedAt: Date.now() }),
+        );
       } catch {
         // ignore
       }

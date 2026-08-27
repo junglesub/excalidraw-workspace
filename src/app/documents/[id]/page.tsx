@@ -28,6 +28,7 @@ export default async function DocumentPage({ params }: PageProps) {
       docId={params.id}
       initialTitle={meta.title}
       initialScene={rawScene}
+      initialUpdatedAt={meta.updated_at}
       permission={meta.permission}
       deleted={!!doc.deleted_at}
     />
