@@ -7,6 +7,8 @@ RUN npm ci
 # ---- builder: compile the Next.js app ----
 FROM node:24-alpine AS builder
 WORKDIR /app
+ARG NEXT_PUBLIC_BUILD_VERSION="dev"
+ENV NEXT_PUBLIC_BUILD_VERSION=$NEXT_PUBLIC_BUILD_VERSION
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -15,10 +17,12 @@ RUN npm run build
 # ---- runner: minimal production image ----
 FROM node:24-alpine AS runner
 WORKDIR /app
+ARG NEXT_PUBLIC_BUILD_VERSION="dev"
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV DATA_DIR=/data
+ENV NEXT_PUBLIC_BUILD_VERSION=$NEXT_PUBLIC_BUILD_VERSION
 
 RUN mkdir -p /data
 

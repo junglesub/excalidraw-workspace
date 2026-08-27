@@ -26,6 +26,7 @@ on:
       - ".env.example"
       - "LICENSE"
       - ".vscode/**"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
 env:
@@ -68,6 +69,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Generate Build Version
+        run: |
+          echo "BUILD_VERSION=${GITHUB_RUN_NUMBER}-$(TZ=Asia/Seoul date +%y%m%d)" >> "$GITHUB_ENV"
+
       - name: Set up QEMU (for multi-arch builds)
         uses: docker/setup-qemu-action@v3
 
@@ -100,7 +105,29 @@ jobs:
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            NEXT_PUBLIC_BUILD_VERSION=${{ env.BUILD_VERSION }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  request-dca-deploy:
+    name: Request DCA Deploy
+    runs-on: ubuntu-latest
+    concurrency:
+      group: web-deploy-main
+      cancel-in-progress: true
+    needs: [build-and-push]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.build-and-push.result == 'success'
+    env:
+      DCA_ADDR: ${{ secrets.DCA_ADDR }}
+      DCA_SECRET: ${{ secrets.DCA_SECRET }}
+    steps:
+      - name: Send Deploy Request to DCA
+        run: |
+          curl --fail --request POST \
+            --url "$DCA_ADDR" \
+            --header "content-type: application/json" \
+            --header "X-API-Key: $DCA_SECRET" \
+            --data "{\"gh\": {\"commitSha\": \"$GITHUB_SHA\", \"githubRepo\": \"$GITHUB_REPOSITORY\"}}"
