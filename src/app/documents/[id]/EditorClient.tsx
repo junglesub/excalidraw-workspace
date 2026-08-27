@@ -47,6 +47,14 @@ interface Props {
   deleted: boolean;
 }
 
+function serializeSceneContent(s: ExcalidrawScene): string {
+  return JSON.stringify({
+    elements: Array.isArray(s.elements) ? s.elements : [],
+    files: s.files || {},
+    viewBackgroundColor: (s.appState as Record<string, unknown> | undefined)?.viewBackgroundColor || "#ffffff",
+  });
+}
+
 const AUTO_SAVE_MS = 3000;
 const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -70,32 +78,32 @@ export default function EditorClient({
   const [titleInput, setTitleInput] = useState(initialTitle);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
 
-  const [initialCanvasScene, setInitialCanvasScene] = useState<ExcalidrawScene>(initialScene);
-  const [canvasKey, setCanvasKey] = useState(0);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [saving, setSaving] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [statusText, setStatusText] = useState("");
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+
+  const sceneRef = useRef<ExcalidrawScene>(initialScene);
+  const lastSavedContentRef = useRef<string>(serializeSceneContent(initialScene));
+  const [initialCanvasScene, setInitialCanvasScene] = useState<ExcalidrawScene>(initialScene);
+  const [canvasKey, setCanvasKey] = useState<number>(0);
+  const isDirtyRef = useRef(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSnapshotRef = useRef<number>(Date.now());
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [versions, setVersions] = useState<VersionRow[]>([]);
+  const [showVersions, setShowVersions] = useState(false);
+  const [previewVersion, setPreviewVersion] = useState<VersionRow | null>(null);
+
+  const [showShare, setShowShare] = useState(false);
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [shareLink, setShareLink] = useState<ShareLinkInfo | null>(null);
-
-  const [showVersions, setShowVersions] = useState(false);
-  const [showShare, setShowShare] = useState(false);
-
-  // Share modal state
   const [shareTab, setShareTab] = useState<"members" | "link" | "transfer">("members");
   const [newMemberUsername, setNewMemberUsername] = useState("");
   const [linkExpiresAt, setLinkExpiresAt] = useState("");
   const [transferUsername, setTransferUsername] = useState("");
   const [shareError, setShareError] = useState<string | null>(null);
   const [shareSuccess, setShareSuccess] = useState<string | null>(null);
-
-  const sceneRef = useRef(initialScene);
-  const isDirtyRef = useRef(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSnapshotRef = useRef<number>(Date.now());
-  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const setStatus = useCallback((msg: string, state: "idle" | "saving" | "saved" | "error" = "saved") => {
     setSaving(state);
@@ -220,7 +228,7 @@ export default function EditorClient({
 
   const saveNow = useCallback(
     async (forceSnapshot: boolean) => {
-      if (!canEdit) return;
+      if (!canEdit || !isDirtyRef.current) return;
       const current = sceneRef.current;
       setStatus("Saving...", "saving");
       try {
@@ -236,6 +244,7 @@ export default function EditorClient({
             }),
           },
         );
+        lastSavedContentRef.current = serializeSceneContent(current);
         isDirtyRef.current = false;
         try {
           localStorage.removeItem(`excalidraw_draft_${docId}`);
@@ -257,6 +266,14 @@ export default function EditorClient({
   const handleChange = useCallback(
     (s: ExcalidrawScene) => {
       if (!canEdit) return;
+
+      const currentSerialized = serializeSceneContent(s);
+      // Only proceed if content actually differs from last saved state
+      if (currentSerialized === lastSavedContentRef.current) {
+        isDirtyRef.current = false;
+        return;
+      }
+
       sceneRef.current = s;
       isDirtyRef.current = true;
 
@@ -291,6 +308,7 @@ export default function EditorClient({
         method: "POST",
         body: JSON.stringify({ scene: current, thumbnailBase64 }),
       });
+      lastSavedContentRef.current = serializeSceneContent(current);
       isDirtyRef.current = false;
       try {
         localStorage.removeItem(`excalidraw_draft_${docId}`);
@@ -357,6 +375,8 @@ export default function EditorClient({
         `/api/documents/${docId}`,
       );
       sceneRef.current = data.scene;
+      lastSavedContentRef.current = serializeSceneContent(data.scene);
+      isDirtyRef.current = false;
       setInitialCanvasScene(data.scene);
       setCanvasKey((k) => k + 1);
       setTitle(data.document.title);
