@@ -1,6 +1,6 @@
 import { getDb, transaction } from "./db";
 import { getDocumentRaw, MAX_VERSIONS, AUTO_SNAPSHOT_INTERVAL_MS, requireWrite } from "./documents";
-import { saveThumbnail, saveThumbnailFromBuffer } from "./thumbnails";
+import { saveThumbnail, saveThumbnailFromBuffer, removeThumbnail } from "./thumbnails";
 import type { DocumentVersionRow, ExcalidrawScene } from "./types";
 import { emptyScene, jsonToScene, sceneToJson } from "./types";
 import { HttpError } from "./http";
@@ -57,7 +57,21 @@ function insertSnapshot(
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, docId, versionNumber, sceneToJson(scene), thumbnailPath, createdBy, created);
 
-  // Trim to the newest MAX_VERSIONS.
+  // Trim to the newest MAX_VERSIONS and GC physical thumbnail files.
+  const trimmed = db
+    .prepare(
+      `SELECT thumbnail_path FROM document_versions
+       WHERE document_id = ? AND id NOT IN (
+          SELECT id FROM document_versions WHERE document_id = ?
+          ORDER BY created_at DESC, version_number DESC LIMIT ?
+       )`,
+    )
+    .all(docId, docId, MAX_VERSIONS) as { thumbnail_path: string | null }[];
+
+  for (const t of trimmed) {
+    removeThumbnail(t.thumbnail_path);
+  }
+
   db.prepare(
     `DELETE FROM document_versions
      WHERE document_id = ? AND id NOT IN (

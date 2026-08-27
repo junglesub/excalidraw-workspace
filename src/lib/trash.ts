@@ -42,6 +42,10 @@ export function permanentDelete(
     .prepare("SELECT * FROM attachments WHERE document_id = ?")
     .all(docId) as { id: string; file_path: string }[];
 
+  const versionRows = getDb()
+    .prepare("SELECT thumbnail_path FROM document_versions WHERE document_id = ?")
+    .all(docId) as { thumbnail_path: string | null }[];
+
   transaction(() => {
     getDb().prepare("DELETE FROM document_versions WHERE document_id = ?").run(docId);
     getDb().prepare("DELETE FROM document_members WHERE document_id = ?").run(docId);
@@ -58,7 +62,14 @@ export function permanentDelete(
       rmSync(abs, { force: true });
     }
   }
+
+  // GC all thumbnails (version snapshots + main document thumbnail).
+  for (const v of versionRows) {
+    removeThumbnail(v.thumbnail_path);
+  }
   removeThumbnail(doc.thumbnail_path);
+  removeThumbnail(`thumbnails/${docId}.png`);
+
   // Remove any leftover per-document attachment directory.
   const docDir = path.join(cfg.attachmentsDir, docId);
   if (docDir.startsWith(cfg.attachmentsDir)) {
