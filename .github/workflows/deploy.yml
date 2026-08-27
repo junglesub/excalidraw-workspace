@@ -3,14 +3,29 @@ name: Build and Publish to GHCR
 on:
   push:
     branches:
-      - master
       - main
     tags:
       - "v*"
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
+      - "**/*.md"
+      - ".gitignore"
+      - ".env.example"
+      - "LICENSE"
+      - ".vscode/**"
+      - ".github/workflows/deploy.yml"
   pull_request:
     branches:
-      - master
       - main
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
+      - "**/*.md"
+      - ".gitignore"
+      - ".env.example"
+      - "LICENSE"
+      - ".vscode/**"
   workflow_dispatch:
 
 env:
