@@ -11,7 +11,7 @@ export async function GET(req: Request, { params }: Ctx) {
     const { id } = await params;
     const user = requireUser(req);
     const adminMode = adminModeFrom(req, user);
-    const { doc, scene } = getDocumentWithScene(id, user.id, user.role, adminMode);
+    const { doc, scene } = getDocumentWithScene(id, user.id, user.role, adminMode, { hydrate: true });
     const content = exportSceneAsExcalidrawJson(scene);
     const filename = `${(doc.title || "document").replace(/[^\w.\- ]+/g, "_")}.excalidraw`;
     return new Response(content, {

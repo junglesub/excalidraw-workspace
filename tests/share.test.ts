@@ -14,8 +14,9 @@ import {
 } from "@/lib/share_links";
 import { GET as getMembersRoute } from "@/app/api/documents/[id]/share/members/route";
 import { POST as postShareLinkRoute } from "@/app/api/documents/[id]/share/link/route";
+import { GET as getShareRoute } from "@/app/api/share/[token]/route";
 import { SESSION_COOKIE } from "@/lib/http";
-import { emptyScene } from "@/lib/types";
+import { emptyScene, type ExcalidrawScene } from "@/lib/types";
 
 describe("Sharing and Share Links", () => {
   beforeEach(() => {
@@ -133,5 +134,28 @@ describe("Sharing and Share Links", () => {
     expect(secondToken).not.toBe(firstToken);
     expect(getValidShareLinkByToken(firstToken)).toBeUndefined();
     expect(getValidShareLinkByToken(secondToken)).toBeDefined();
+  });
+
+  it("should return compact scene without dataURL in GET /api/share/[token]", async () => {
+    const owner = createUser("alice", "pass123", "USER");
+    const fileId = "share_img_1";
+    const rawBytes = Buffer.from("share-image-content", "utf-8");
+    const dataURL = `data:image/png;base64,${rawBytes.toString("base64")}`;
+    const scene: ExcalidrawScene = {
+      ...emptyScene(),
+      elements: [{ id: "e1", type: "image", fileId, isDeleted: false }],
+      files: {
+        [fileId]: { id: fileId, mimeType: "image/png", dataURL, created: Date.now() },
+      },
+    };
+    const doc = createDocument(owner.id, scene, "Shared Doc");
+    const link = createOrReplaceShareLink(doc.id, null, "VIEWER");
+
+    const req = new Request(`http://localhost/api/share/${link.token}`);
+    const res = await getShareRoute(req, { params: Promise.resolve({ token: link.token }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.scene.files[fileId]).toBeDefined();
+    expect(body.scene.files[fileId].dataURL).toBeUndefined();
   });
 });

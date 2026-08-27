@@ -26,7 +26,7 @@ export function migrateLegacyScenes(): MigrationResult {
       .all() as { id: string; scene: string }[];
     for (const d of docs) {
       try {
-        const compact = compactSceneFiles(d.id, jsonToScene(d.scene));
+        const compact = compactSceneFiles(d.id, jsonToScene(d.scene), { allowInlineDataUrl: true });
         db.prepare("UPDATE documents SET scene = ? WHERE id = ?").run(sceneToJson(compact), d.id);
         migratedDocs++;
       } catch (err) {
@@ -41,7 +41,7 @@ export function migrateLegacyScenes(): MigrationResult {
       .all() as { id: string; document_id: string; scene: string }[];
     for (const v of versions) {
       try {
-        const compact = compactSceneFiles(v.document_id, jsonToScene(v.scene));
+        const compact = compactSceneFiles(v.document_id, jsonToScene(v.scene), { allowInlineDataUrl: true });
         db.prepare("UPDATE document_versions SET scene = ? WHERE id = ?").run(sceneToJson(compact), v.id);
         migratedVersions++;
       } catch (err) {

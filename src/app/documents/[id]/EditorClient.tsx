@@ -5,6 +5,12 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import ExcalidrawCanvas from "@/components/ExcalidrawCanvas";
 import { api } from "@/lib/client";
+import {
+  saveDocumentScene,
+  sceneForLocalDraft,
+  serializeSceneForComparison,
+  buildCompactClientScene,
+} from "@/lib/client_save";
 import type { ExcalidrawScene, Permission } from "@/lib/types";
 
 interface User {
@@ -47,14 +53,6 @@ interface Props {
   deleted: boolean;
 }
 
-function serializeSceneContent(s: ExcalidrawScene): string {
-  return JSON.stringify({
-    elements: Array.isArray(s.elements) ? s.elements : [],
-    files: s.files || {},
-    viewBackgroundColor: (s.appState as Record<string, unknown> | undefined)?.viewBackgroundColor || "#ffffff",
-  });
-}
-
 const AUTO_SAVE_MS = 3000;
 const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -83,10 +81,13 @@ export default function EditorClient({
   const [statusText, setStatusText] = useState("");
 
   const sceneRef = useRef<ExcalidrawScene>(initialScene);
-  const lastSavedContentRef = useRef<string>(serializeSceneContent(initialScene));
+  const lastSavedContentRef = useRef<string>(serializeSceneForComparison(initialScene));
   const [initialCanvasScene, setInitialCanvasScene] = useState<ExcalidrawScene>(initialScene);
   const [canvasKey, setCanvasKey] = useState<number>(0);
   const isDirtyRef = useRef(false);
+  const persistedFileIdsRef = useRef<Set<string>>(new Set(Object.keys(initialScene.files || {})));
+  const isSavingRef = useRef<boolean>(false);
+  const queuedSaveRef = useRef<{ forceSnapshot: boolean } | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSnapshotRef = useRef<number>(Date.now());
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -161,8 +162,14 @@ export default function EditorClient({
         } else if (draftScene && Array.isArray(draftScene.elements) && draftScene.elements.length > 0) {
           // If local draft is strictly newer than server timestamp (unsaved work from network drop/crash)
           if (!serverTimestamp || draftTimestamp > serverTimestamp) {
-            sceneRef.current = draftScene;
-            setInitialCanvasScene(draftScene);
+            const restored = sceneForLocalDraft(draftScene, persistedFileIdsRef.current);
+            // Hydration-only drafts (same compact scene, leftover dataURLs) are not real edits.
+            if (serializeSceneForComparison(restored) === serializeSceneForComparison(initialScene)) {
+              localStorage.removeItem(`excalidraw_draft_${docId}`);
+              return;
+            }
+            sceneRef.current = restored;
+            setInitialCanvasScene(restored);
             setCanvasKey((k) => k + 1);
             setStatus("Restored unsaved local draft", "saved");
           }
@@ -173,115 +180,115 @@ export default function EditorClient({
     }
   }, [docId, initialScene, initialUpdatedAt, setStatus]);
 
-  // Flush unsaved changes on beforeunload
+  // Cleanup timers on unmount
   useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (isDirtyRef.current && canEdit) {
-        try {
-          fetch(`/api/documents/${docId}/scene`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ scene: sceneRef.current, snapshot: false }),
-            keepalive: true,
-          });
-        } catch {
-          // ignore
-        }
-      }
-    };
-
-    window.addEventListener("beforeunload", handleBeforeUnload);
     return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
     };
-  }, [canEdit, docId]);
+  }, []);
 
-  async function generateThumbnailBase64(currentScene: ExcalidrawScene): Promise<string | null> {
-    if (!currentScene.elements || !Array.isArray(currentScene.elements) || currentScene.elements.length === 0) {
-      return null;
-    }
-    try {
-      const { exportToBlob } = await import("@excalidraw/excalidraw");
-      const blob = await exportToBlob({
-        elements: currentScene.elements as any,
-        appState: {
-          exportBackground: true,
-          viewBackgroundColor: (currentScene.appState as any)?.viewBackgroundColor || "#ffffff",
-        },
-        files: (currentScene.files as any) || {},
-        mimeType: "image/png",
-        maxWidthOrHeight: 400,
-      });
-      if (!blob) return null;
-      return new Promise<string | null>((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.onerror = () => resolve(null);
-        reader.readAsDataURL(blob);
-      });
-    } catch {
-      return null;
-    }
-  }
-
-  const saveNow = useCallback(
+  const executeSave = useCallback(
     async (forceSnapshot: boolean) => {
       if (!canEdit || !isDirtyRef.current) return;
-      const current = sceneRef.current;
-      setStatus("Saving...", "saving");
+      if (isSavingRef.current) {
+        queuedSaveRef.current = {
+          forceSnapshot: forceSnapshot || queuedSaveRef.current?.forceSnapshot || false,
+        };
+        return;
+      }
+
+      isSavingRef.current = true;
+      setStatus(forceSnapshot ? "Saving snapshot..." : "Saving...", "saving");
+
       try {
-        const thumbnailBase64 = await generateThumbnailBase64(current);
-        const res = await api<{ ok: boolean; snapshotCreated: boolean; updatedAt: string }>(
-          `/api/documents/${docId}/scene`,
-          {
-            method: "PUT",
-            body: JSON.stringify({
-              scene: current,
-              snapshot: forceSnapshot,
-              thumbnailBase64,
-            }),
-          },
-        );
-        lastSavedContentRef.current = serializeSceneContent(current);
-        isDirtyRef.current = false;
-        try {
-          localStorage.removeItem(`excalidraw_draft_${docId}`);
-        } catch {
-          // ignore
+        let currentSnapshot = forceSnapshot;
+        while (true) {
+          const snapshotBeforeSave = sceneRef.current;
+          const serializedBeforeSave = serializeSceneForComparison(snapshotBeforeSave);
+
+          const res = await saveDocumentScene({
+            docId,
+            scene: snapshotBeforeSave,
+            persistedFileIds: persistedFileIdsRef.current,
+            isManualSave: currentSnapshot,
+            snapshotDue: currentSnapshot,
+          });
+
+          // Check if user edited scene during in-flight save
+          const currentSerialized = serializeSceneForComparison(sceneRef.current);
+          if (currentSerialized === serializedBeforeSave) {
+            lastSavedContentRef.current = serializedBeforeSave;
+            isDirtyRef.current = false;
+            try {
+              localStorage.removeItem(`excalidraw_draft_${docId}`);
+            } catch {
+              // ignore
+            }
+          } else {
+            // Edits occurred while saving! Retain dirty state and keep localStorage draft
+            lastSavedContentRef.current = serializedBeforeSave;
+            isDirtyRef.current = true;
+          }
+
+          if (res.snapshotCreated || currentSnapshot) {
+            lastSnapshotRef.current = Date.now();
+            await loadVersions();
+          }
+
+          if (queuedSaveRef.current || isDirtyRef.current) {
+            currentSnapshot = queuedSaveRef.current?.forceSnapshot || false;
+            queuedSaveRef.current = null;
+          } else {
+            queuedSaveRef.current = null;
+            break;
+          }
         }
-        if (res.snapshotCreated || forceSnapshot) {
-          lastSnapshotRef.current = Date.now();
-          await loadVersions();
-        }
+
         setStatus(`Saved ${new Date().toLocaleTimeString()}`, "saved");
       } catch (err) {
+        queuedSaveRef.current = null;
         setStatus(err instanceof Error ? err.message : "Save failed", "error");
+      } finally {
+        isSavingRef.current = false;
       }
     },
     [canEdit, docId, loadVersions, setStatus],
+  );
+
+  const saveNow = useCallback(
+    async (forceSnapshot: boolean) => {
+      await executeSave(forceSnapshot);
+    },
+    [executeSave],
   );
 
   const handleChange = useCallback(
     (s: ExcalidrawScene) => {
       if (!canEdit) return;
 
-      const currentSerialized = serializeSceneContent(s);
+      // Keep the latest in-memory files (hydrated dataURLs) even when not dirty,
+      // so thumbnail exportToBlob can rasterize images.
+      sceneRef.current = s;
+
+      const currentSerialized = serializeSceneForComparison(s);
       // Only proceed if content actually differs from last saved state
       if (currentSerialized === lastSavedContentRef.current) {
         isDirtyRef.current = false;
         return;
       }
 
-      sceneRef.current = s;
       isDirtyRef.current = true;
 
-      // 1. Immediately cache in localStorage with timestamp
+      // 1. Immediately cache in localStorage with timestamp.
+      // Persisted images stay compact so reload uses /api/attachments instead of draft base64.
       try {
         localStorage.setItem(
           `excalidraw_draft_${docId}`,
-          JSON.stringify({ scene: s, updatedAt: Date.now() }),
+          JSON.stringify({
+            scene: sceneForLocalDraft(s, persistedFileIdsRef.current),
+            updatedAt: Date.now(),
+          }),
         );
       } catch {
         // ignore
@@ -300,28 +307,8 @@ export default function EditorClient({
   const manualSave = useCallback(async () => {
     if (!canEdit) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    setStatus("Saving snapshot...", "saving");
-    try {
-      const current = sceneRef.current;
-      const thumbnailBase64 = await generateThumbnailBase64(current);
-      const res = await api<{ versions: VersionRow[] }>(`/api/documents/${docId}/save`, {
-        method: "POST",
-        body: JSON.stringify({ scene: current, thumbnailBase64 }),
-      });
-      lastSavedContentRef.current = serializeSceneContent(current);
-      isDirtyRef.current = false;
-      try {
-        localStorage.removeItem(`excalidraw_draft_${docId}`);
-      } catch {
-        // ignore
-      }
-      lastSnapshotRef.current = Date.now();
-      setVersions(res.versions);
-      setStatus(`Saved ${new Date().toLocaleTimeString()}`, "saved");
-    } catch (err) {
-      setStatus(err instanceof Error ? err.message : "Save failed", "error");
-    }
-  }, [canEdit, docId, setStatus]);
+    await executeSave(true);
+  }, [canEdit, executeSave]);
 
   // Intercept Ctrl+S / Cmd+S globally to save immediately to server
   useEffect(() => {
@@ -340,6 +327,32 @@ export default function EditorClient({
       window.removeEventListener("keydown", handleKeyDown, { capture: true });
     };
   }, [canEdit, manualSave]);
+
+  // S3 crash-save beacon: on beforeunload, send a keepalive PUT with compact scene if dirty and canEdit
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (!canEdit || !isDirtyRef.current || !sceneRef.current) return;
+      const compactScene = buildCompactClientScene(sceneRef.current);
+      const base = typeof window !== "undefined" && window.location ? window.location.origin : "";
+      const url = `${base}/api/documents/${encodeURIComponent(docId)}/scene`;
+      try {
+        fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scene: compactScene }),
+          credentials: "include",
+          keepalive: true,
+        });
+      } catch {
+        // ignore
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+    };
+  }, [canEdit, docId]);
 
   async function saveTitle() {
     setIsEditingTitle(false);
@@ -375,7 +388,7 @@ export default function EditorClient({
         `/api/documents/${docId}`,
       );
       sceneRef.current = data.scene;
-      lastSavedContentRef.current = serializeSceneContent(data.scene);
+      lastSavedContentRef.current = serializeSceneForComparison(data.scene);
       isDirtyRef.current = false;
       setInitialCanvasScene(data.scene);
       setCanvasKey((k) => k + 1);
@@ -627,6 +640,7 @@ export default function EditorClient({
       <main className="flex-1 relative min-h-0">
         <ExcalidrawCanvas
           key={`canvas-${docId}-${canvasKey}`}
+          docId={docId}
           initialScene={initialCanvasScene}
           readOnly={!canEdit}
           onSceneChange={handleChange}

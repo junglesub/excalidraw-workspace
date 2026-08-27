@@ -36,6 +36,23 @@ interface MissingFileItem {
   byteSize?: number;
 }
 
+interface UnreferencedAttachmentItem {
+  documentId: string;
+  attachmentId: string;
+  fileName: string;
+  filePath: string;
+  byteSize: number;
+  createdAt: string;
+  ageSeconds: number;
+}
+
+interface UnreferencedAttachmentsReport {
+  items: UnreferencedAttachmentItem[];
+  totalCount: number;
+  totalBytes: number;
+  gracePeriodSeconds: number;
+}
+
 interface StorageScanReport {
   database: SqliteMetrics;
   attachments: StorageItemMetrics;
@@ -55,6 +72,7 @@ interface StorageScanReport {
     items: MissingFileItem[];
     totalCount: number;
   };
+  unreferencedAttachments: UnreferencedAttachmentsReport;
   scannedAt: string;
 }
 
@@ -112,6 +130,30 @@ export function StoragePanel() {
     }
   }
 
+  async function handleCleanUnreferenced() {
+    if (!report || report.unreferencedAttachments.totalCount === 0) return;
+    const msg = `Are you sure you want to permanently purge ${report.unreferencedAttachments.totalCount} unreferenced attachment records (${formatBytes(report.unreferencedAttachments.totalBytes)}) older than 24 hours?\n\nThis will remove unreferenced database rows and their associated disk files. Attachments referenced in any current document or version are never touched.`;
+    if (!window.confirm(msg)) return;
+
+    setActionLoading(true);
+    setError(null);
+    setSuccessMessage(null);
+    try {
+      const res = await api<{ deletedRows: number; deletedFiles: string[]; reclaimedBytes: number; warnings?: string[] }>("/api/admin/storage", {
+        method: "POST",
+        body: JSON.stringify({ action: "cleanup-unreferenced", confirm: true }),
+      });
+      setSuccessMessage(
+        `Purge complete: deleted ${res.deletedRows} rows (${res.deletedFiles.length} files), reclaimed ${formatBytes(res.reclaimedBytes)}.${res.warnings ? ` Warnings: ${res.warnings.length}` : ""}`,
+      );
+      await fetchScan();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Purge failed");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
   async function handleVacuum() {
     const warning = `WARNING: SQLite VACUUM is a blocking operation that temporarily locks the database and creates a temporary copy to rebuild and defragment free pages.\n\nFree space to reclaim: ${formatBytes(report?.database.reclaimableBytes || 0)} (${report?.database.freelistCount || 0} pages).\n\nDo you want to proceed with VACUUM now?`;
     if (!window.confirm(warning)) return;
@@ -139,10 +181,10 @@ export function StoragePanel() {
         <div>
           <h2 className="text-lg font-semibold">Storage & Database Maintenance</h2>
           <p className="text-xs text-gray-500">
-            Monitor disk storage, SQLite freelist, legacy inline scenes, orphan files, and missing file references.
+            Monitor disk storage, SQLite freelist, legacy inline scenes, orphan files, unreferenced attachments, and missing file references.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button
             onClick={fetchScan}
             disabled={loading || actionLoading}
@@ -156,6 +198,13 @@ export function StoragePanel() {
             className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded transition-colors disabled:opacity-50"
           >
             Clean Up Orphans ({report?.orphans.totalCount || 0})
+          </button>
+          <button
+            onClick={handleCleanUnreferenced}
+            disabled={loading || actionLoading || !report || report.unreferencedAttachments.totalCount === 0}
+            className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium rounded transition-colors disabled:opacity-50"
+          >
+            Purge Unreferenced ({report?.unreferencedAttachments.totalCount || 0})
           </button>
           <button
             onClick={handleVacuum}
@@ -182,7 +231,7 @@ export function StoragePanel() {
       {report && (
         <>
           {/* Storage Overview Cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
             <div className="bg-white border rounded p-3">
               <div className="text-xs font-medium text-gray-500 uppercase">Database File</div>
               <div className="text-base font-semibold mt-1">{formatBytes(report.database.dbBytes)}</div>
@@ -226,6 +275,14 @@ export function StoragePanel() {
                 {report.legacyScenes.documentsCount} docs, {report.legacyScenes.versionsCount} versions
               </div>
             </div>
+
+            <div className="bg-white border rounded p-3">
+              <div className="text-xs font-medium text-gray-500 uppercase">Unref DB Rows (&gt;24h)</div>
+              <div className="text-base font-semibold mt-1">{report.unreferencedAttachments.totalCount}</div>
+              <div className="text-xs text-gray-400 mt-0.5">
+                {formatBytes(report.unreferencedAttachments.totalBytes)} reclaimable
+              </div>
+            </div>
           </div>
 
           {/* Missing DB Files Warning Banner */}
@@ -246,6 +303,49 @@ export function StoragePanel() {
               </div>
             </div>
           )}
+
+          {/* Unreferenced DB Attachments (>24h) Details */}
+          <div className="bg-white border rounded p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold">
+                Unreferenced DB Attachments (&gt;24h Grace Period) ({report.unreferencedAttachments.totalCount} records, {formatBytes(report.unreferencedAttachments.totalBytes)})
+              </h3>
+              <span className="text-xs text-gray-400">
+                24-Hour Grace Period Enforced
+              </span>
+            </div>
+
+            {report.unreferencedAttachments.totalCount === 0 ? (
+              <p className="text-xs text-gray-500 py-2">No unreferenced attachment rows older than 24 hours detected.</p>
+            ) : (
+              <div className="max-h-60 overflow-y-auto border rounded text-xs">
+                <table className="w-full text-left">
+                  <thead className="bg-gray-50 sticky top-0">
+                    <tr>
+                      <th className="p-2">Doc ID</th>
+                      <th className="p-2">Attachment ID</th>
+                      <th className="p-2">File Name</th>
+                      <th className="p-2">Size</th>
+                      <th className="p-2">Age</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {report.unreferencedAttachments.items.map((u, idx) => (
+                      <tr key={idx} className="hover:bg-gray-50">
+                        <td className="p-2 font-mono">{u.documentId}</td>
+                        <td className="p-2 font-mono">{u.attachmentId}</td>
+                        <td className="p-2">{u.fileName}</td>
+                        <td className="p-2">{formatBytes(u.byteSize)}</td>
+                        <td className="p-2 text-gray-500">
+                          {Math.floor(u.ageSeconds / 3600)}h ago ({new Date(u.createdAt).toLocaleString()})
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
 
           {/* Orphan Files Details */}
           <div className="bg-white border rounded p-4 space-y-3">

@@ -36,6 +36,23 @@ export interface MissingFileItem {
   byteSize?: number;
 }
 
+export interface UnreferencedAttachmentItem {
+  documentId: string;
+  attachmentId: string;
+  fileName: string;
+  filePath: string;
+  byteSize: number;
+  createdAt: string;
+  ageSeconds: number;
+}
+
+export interface UnreferencedAttachmentsReport {
+  items: UnreferencedAttachmentItem[];
+  totalCount: number;
+  totalBytes: number;
+  gracePeriodSeconds: number;
+}
+
 export interface StorageScanReport {
   database: SqliteMetrics;
   attachments: StorageItemMetrics;
@@ -55,6 +72,7 @@ export interface StorageScanReport {
     items: MissingFileItem[];
     totalCount: number;
   };
+  unreferencedAttachments: UnreferencedAttachmentsReport;
   scannedAt: string;
 }
 
@@ -65,12 +83,22 @@ export interface CleanupResult {
   scannedAt: string;
 }
 
+export interface CleanUnreferencedResult {
+  deletedRows: number;
+  deletedFiles: string[];
+  reclaimedBytes: number;
+  warnings?: string[];
+  scannedAt: string;
+}
+
 export interface VacuumResult {
   before: SqliteMetrics;
   after: SqliteMetrics;
   reclaimedBytes: number;
   timestamp: string;
 }
+
+export const UNREFERENCED_GRACE_PERIOD_SECONDS = 86400; // 24 hours
 
 /**
  * Retrieve SQLite page, freelist, and database file byte metrics.
@@ -345,6 +373,81 @@ export function scanStorage(): StorageScanReport {
     // Ignore query error
   }
 
+  // 5. Scan Tier 2 unreferenced DB attachment rows (>24h grace period, absent from active + version scenes)
+  const referencedAttachmentKeys = new Set<string>(); // set of `${document_id}:${fileId}`
+
+  try {
+    const docs = db.prepare("SELECT id, scene FROM documents;").all() as { id: string; scene: string | null }[];
+    for (const doc of docs) {
+      if (doc.scene) {
+        try {
+          const parsed = JSON.parse(doc.scene);
+          if (parsed.files && typeof parsed.files === "object") {
+            for (const fileId of Object.keys(parsed.files)) {
+              referencedAttachmentKeys.add(`${doc.id}:${fileId}`);
+            }
+          }
+        } catch {
+          // Ignore JSON parse error
+        }
+      }
+    }
+
+    const versions = db.prepare("SELECT document_id, scene FROM document_versions;").all() as { document_id: string; scene: string | null }[];
+    for (const ver of versions) {
+      if (ver.scene) {
+        try {
+          const parsed = JSON.parse(ver.scene);
+          if (parsed.files && typeof parsed.files === "object") {
+            for (const fileId of Object.keys(parsed.files)) {
+              referencedAttachmentKeys.add(`${ver.document_id}:${fileId}`);
+            }
+          }
+        } catch {
+          // Ignore JSON parse error
+        }
+      }
+    }
+  } catch {
+    // Ignore query error
+  }
+
+  const unreferencedItems: UnreferencedAttachmentItem[] = [];
+  const nowMs = Date.now();
+
+  try {
+    const allAttachments = db.prepare("SELECT id, document_id, file_name, file_size, file_path, created_at FROM attachments;").all() as {
+      id: string;
+      document_id: string;
+      file_name: string;
+      file_size: number;
+      file_path: string;
+      created_at: string;
+    }[];
+
+    for (const att of allAttachments) {
+      const refKey = `${att.document_id}:${att.id}`;
+      if (!referencedAttachmentKeys.has(refKey)) {
+        const createdMs = new Date(att.created_at).getTime();
+        const ageSeconds = Math.max(0, Math.floor((nowMs - createdMs) / 1000));
+        if (ageSeconds >= UNREFERENCED_GRACE_PERIOD_SECONDS) {
+          unreferencedItems.push({
+            documentId: att.document_id,
+            attachmentId: att.id,
+            fileName: att.file_name,
+            filePath: att.file_path,
+            byteSize: att.file_size,
+            createdAt: att.created_at,
+            ageSeconds,
+          });
+        }
+      }
+    }
+  } catch {
+    // Ignore query error
+  }
+
+  const totalUnreferencedBytes = unreferencedItems.reduce((acc, item) => acc + item.byteSize, 0);
   const totalOrphanBytes = orphanItems.reduce((acc, item) => acc + item.byteSize, 0);
   const totalStorageBytes =
     dbMetrics.dbBytes +
@@ -377,6 +480,12 @@ export function scanStorage(): StorageScanReport {
     missingFiles: {
       items: missingItems,
       totalCount: missingItems.length,
+    },
+    unreferencedAttachments: {
+      items: unreferencedItems,
+      totalCount: unreferencedItems.length,
+      totalBytes: totalUnreferencedBytes,
+      gracePeriodSeconds: UNREFERENCED_GRACE_PERIOD_SECONDS,
     },
     scannedAt: new Date().toISOString(),
   };
@@ -477,5 +586,83 @@ export function runVacuum(confirm: boolean): VacuumResult {
     after,
     reclaimedBytes,
     timestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * Explicit confirmed cleanup of Tier 2 unreferenced attachment rows and physical files:
+ * - Rescans immediately before execution to prevent race conditions.
+ * - Only cleans attachment rows older than the 24-hour grace period unreferenced by any scene or retained version.
+ * - For each candidate: deletes regular disk file (never symlinks), deletes DB row, and cleans parent directory if empty.
+ * - If physical file is missing or a symlink: skips deletion, preserves DB row, and logs warning result.
+ */
+export function cleanUnreferencedAttachments(confirm: boolean): CleanUnreferencedResult {
+  if (!confirm) {
+    throw new Error("Explicit confirmation required for unreferenced attachments cleanup");
+  }
+
+  const cfg = config();
+  const db = getDb();
+  const resolvedAttachmentsDir = path.resolve(cfg.attachmentsDir);
+
+  // Immediate rescan before execution to prevent race conditions
+  const scan = scanStorage();
+  const deletedFiles: string[] = [];
+  let deletedRows = 0;
+  let reclaimedBytes = 0;
+  const warnings: string[] = [];
+
+  for (const item of scan.unreferencedAttachments.items) {
+    try {
+      const diskPath = path.resolve(resolvedAttachmentsDir, item.documentId, item.attachmentId);
+
+      // Must be strictly inside attachmentsDir
+      if (!diskPath.startsWith(resolvedAttachmentsDir + path.sep)) {
+        warnings.push(`Attachment ${item.documentId}/${item.attachmentId} path is outside allowed attachments directory`);
+        continue;
+      }
+
+      // Check physical existence on disk
+      if (!fs.existsSync(diskPath)) {
+        warnings.push(`Attachment file missing on disk for row ${item.documentId}/${item.attachmentId}; row preserved`);
+        continue;
+      }
+
+      const stat = fs.lstatSync(diskPath);
+      // Symlink check: do NOT delete symlink or delete DB row if it's a symlink
+      if (stat.isSymbolicLink() || !stat.isFile()) {
+        warnings.push(`Attachment file ${item.documentId}/${item.attachmentId} is a symlink or not a regular file; row preserved`);
+        continue;
+      }
+
+      const size = stat.size;
+      fs.unlinkSync(diskPath);
+      deletedFiles.push(`attachments/${item.documentId}/${item.attachmentId}`);
+      reclaimedBytes += size;
+
+      // Delete DB row
+      db.prepare("DELETE FROM attachments WHERE document_id = ? AND id = ?;").run(item.documentId, item.attachmentId);
+      deletedRows += 1;
+
+      // Clean empty doc dir if empty
+      const parentDir = path.dirname(diskPath);
+      try {
+        if (fs.existsSync(parentDir) && fs.readdirSync(parentDir).length === 0) {
+          fs.rmdirSync(parentDir);
+        }
+      } catch {
+        // ignore
+      }
+    } catch (err) {
+      warnings.push(`Failed to clean unreferenced attachment ${item.documentId}/${item.attachmentId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return {
+    deletedRows,
+    deletedFiles,
+    reclaimedBytes,
+    warnings: warnings.length > 0 ? warnings : undefined,
+    scannedAt: new Date().toISOString(),
   };
 }

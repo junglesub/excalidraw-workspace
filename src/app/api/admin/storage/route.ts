@@ -1,5 +1,5 @@
 import { handleError, json, jsonError, readJson, requireAdmin, requireUser } from "@/lib/http";
-import { scanStorage, cleanOrphans, runVacuum } from "@/lib/storage_maintenance";
+import { scanStorage, cleanOrphans, cleanUnreferencedAttachments, runVacuum } from "@/lib/storage_maintenance";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +20,7 @@ export async function GET(req: Request) {
 
 /**
  * POST /api/admin/storage
- * Admin-only: Explicitly confirmed storage maintenance actions (cleanup, vacuum).
+ * Admin-only: Explicitly confirmed storage maintenance actions (cleanup, cleanup-unreferenced, vacuum).
  */
 export async function POST(req: Request) {
   try {
@@ -38,6 +38,14 @@ export async function POST(req: Request) {
       return json(result);
     }
 
+    if (action === "cleanup-unreferenced") {
+      if (!confirm) {
+        return jsonError("Explicit confirmation required for unreferenced attachments cleanup", 400);
+      }
+      const result = cleanUnreferencedAttachments(confirm);
+      return json(result);
+    }
+
     if (action === "vacuum") {
       if (!confirm) {
         return jsonError("Explicit confirmation required for SQLite VACUUM", 400);
@@ -46,7 +54,7 @@ export async function POST(req: Request) {
       return json(result);
     }
 
-    return jsonError("Invalid action. Supported actions: 'cleanup', 'vacuum'", 400);
+    return jsonError("Invalid action. Supported actions: 'cleanup', 'cleanup-unreferenced', 'vacuum'", 400);
   } catch (err) {
     return handleError(err);
   }

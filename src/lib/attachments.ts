@@ -22,6 +22,7 @@ export const ALLOWED_MIME_TYPES = new Set([
 ]);
 
 export const SAFE_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
+export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB
 const BASE64_SYNTAX_REGEX = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 export function isValidBase64String(str: string): boolean {
@@ -84,16 +85,27 @@ export function readAttachmentBytes(row: AttachmentRow): Buffer {
   return readFileSync(abs);
 }
 
+export interface StoredAttachment extends AttachmentRow {
+  isNew: boolean;
+}
+
 /**
  * Persist an uploaded file under /data/attachments/<docId>/<fileId> and record
- * its metadata. Returns the attachment row.
+ * its metadata. Returns the attachment row with isNew flag.
+ *
+ * Deterministic upload:
+ * - When customFileId is provided, validates SAFE_ID_REGEX.
+ * - If (docId, customFileId) already exists with identical SHA-256, returns existing row (isNew: false).
+ * - If (docId, customFileId) exists with different content, throws 409 Conflict.
+ * - When customFileId is absent, generates a server-side UUID.
  */
 export function storeAttachment(
   docId: string,
   fileName: string,
   mimeType: string,
   data: Buffer,
-): AttachmentRow {
+  customFileId?: string,
+): StoredAttachment {
   if (!SAFE_ID_REGEX.test(docId)) {
     throw new HttpError(400, "Invalid document ID format");
   }
@@ -104,12 +116,44 @@ export function storeAttachment(
   if (!data || data.length === 0) {
     throw new HttpError(400, "Empty file attachment");
   }
+  if (data.length > MAX_ATTACHMENT_BYTES) {
+    throw new HttpError(413, `Attachment exceeds maximum size limit of ${MAX_ATTACHMENT_BYTES / (1024 * 1024)}MB`);
+  }
 
   const db = getDb();
-  const id = randomUUID();
   const cfg = config();
   const dir = path.join(cfg.attachmentsDir, docId);
   mkdirSync(dir, { recursive: true });
+
+  const sha256 = createHash("sha256").update(data).digest("hex");
+
+  let id: string;
+  if (customFileId && customFileId.trim()) {
+    const trimmedId = customFileId.trim();
+    if (!SAFE_ID_REGEX.test(trimmedId)) {
+      throw new HttpError(400, `Invalid fileId format: ${customFileId}`);
+    }
+    id = trimmedId;
+
+    const existing = getAttachment(docId, id);
+    if (existing) {
+      if (existing.sha256 === sha256) {
+        // Idempotent match: ensure disk file exists
+        const abs = resolveAttachmentFilesystem(existing);
+        if (!existsSync(abs)) {
+          writeFileSync(abs, data);
+        }
+        return { ...existing, isNew: false };
+      }
+      // Content conflict on same fileId in document
+      throw new HttpError(
+        409,
+        `Attachment conflict: fileId "${id}" already exists in document "${docId}" with different content`,
+      );
+    }
+  } else {
+    id = randomUUID();
+  }
 
   const relativePath = path.posix
     .join("attachments", docId, id)
@@ -117,7 +161,6 @@ export function storeAttachment(
   const abs = path.join(cfg.dataDir, relativePath);
   writeFileSync(abs, data);
 
-  const sha256 = createHash("sha256").update(data).digest("hex");
   const createdAt = new Date().toISOString();
 
   db.prepare(
@@ -134,7 +177,8 @@ export function storeAttachment(
     createdAt,
   );
 
-  return getAttachment(docId, id)!;
+  const createdRow = getAttachment(docId, id)!;
+  return { ...createdRow, isNew: true };
 }
 
 /**
@@ -142,11 +186,15 @@ export function storeAttachment(
  * atomically to /data/attachments/<docId>/<fileId>, records metadata in the
  * attachments table, and drops unreferenced files from the stored scene.
  *
- * Guaranteed atomic cleanup: if writing or DB persistence fails, any newly
- * written disk files during this call (including restored missing files) are
- * immediately cleaned up.
+ * Steady-state policy:
+ * Rejects inline dataURL by default unless options.allowInlineDataUrl is true (used
+ * by explicit imports and legacy migrations).
  */
-export function compactSceneFiles(docId: string, scene: ExcalidrawScene): ExcalidrawScene {
+export function compactSceneFiles(
+  docId: string,
+  scene: ExcalidrawScene,
+  options: { allowInlineDataUrl?: boolean } = { allowInlineDataUrl: false },
+): ExcalidrawScene {
   if (!scene) return scene;
 
   if (!SAFE_ID_REGEX.test(docId)) {
@@ -157,8 +205,25 @@ export function compactSceneFiles(docId: string, scene: ExcalidrawScene): Excali
   const referencedFileIds = new Set<string>();
   if (Array.isArray(scene.elements)) {
     for (const el of scene.elements as Record<string, unknown>[]) {
-      if (el && el.type === "image" && !el.isDeleted && typeof el.fileId === "string") {
+      if (el && el.type === "image" && !el.isDeleted && typeof el.fileId === "string" && el.fileId) {
         referencedFileIds.add(el.fileId);
+      }
+    }
+  }
+
+  // M2: Enforce fail-closed persistence on steady-state compact save
+  if (!options.allowInlineDataUrl && referencedFileIds.size > 0) {
+    for (const fileId of referencedFileIds) {
+      if (!SAFE_ID_REGEX.test(fileId)) {
+        throw new HttpError(400, `Invalid fileId format: ${fileId}`);
+      }
+      const existing = getAttachment(docId, fileId);
+      if (!existing) {
+        throw new HttpError(400, `Attachment file not found for image element: ${fileId}`);
+      }
+      const abs = resolveAttachmentFilesystem(existing);
+      if (!existsSync(abs)) {
+        throw new HttpError(400, `Attachment binary missing on disk for image element: ${fileId}`);
       }
     }
   }
@@ -192,65 +257,74 @@ export function compactSceneFiles(docId: string, scene: ExcalidrawScene): Excali
       }
 
       const dataURL = fileObj.dataURL;
-      if (typeof dataURL === "string" && dataURL.startsWith("data:")) {
-        const match = dataURL.match(/^data:([^;]+);base64,(.*)$/s);
-        if (!match) {
-          throw new HttpError(400, `Invalid dataURL format for file: ${fileId}`);
-        }
-        const extractedMime = match[1].toLowerCase();
-        if (!ALLOWED_MIME_TYPES.has(extractedMime)) {
-          throw new HttpError(400, `Unsupported image MIME type: ${extractedMime}`);
+      if (typeof dataURL === "string" && dataURL.length > 0) {
+        if (!options.allowInlineDataUrl) {
+          throw new HttpError(
+            400,
+            `Inline dataURL is prohibited in steady-state; upload attachments via binary endpoint (fileId: ${fileId})`,
+          );
         }
 
-        const rawBase64 = match[2].trim();
-        if (rawBase64.length === 0) {
-          throw new HttpError(400, `Empty Base64 payload for file: ${fileId}`);
-        }
-        if (!isValidBase64String(rawBase64)) {
-          throw new HttpError(400, `Invalid Base64 syntax for file: ${fileId}`);
-        }
-
-        const buffer = Buffer.from(rawBase64, "base64");
-        if (buffer.length === 0) {
-          throw new HttpError(400, `Empty decoded image buffer for file: ${fileId}`);
-        }
-
-        const sha256 = createHash("sha256").update(buffer).digest("hex");
-        const relativePath = path.posix.join("attachments", docId, fileId).replace(/\//g, path.sep);
-        const finalAbs = path.join(cfg.dataDir, relativePath);
-
-        const existing = getAttachment(docId, fileId);
-        if (existing) {
-          if (existing.sha256 && existing.sha256 !== sha256) {
-            throw new HttpError(400, `Attachment content mismatch for existing fileId in document: ${fileId}`);
+        if (dataURL.startsWith("data:")) {
+          const match = dataURL.match(/^data:([^;]+);base64,(.*)$/s);
+          if (!match) {
+            throw new HttpError(400, `Invalid dataURL format for file: ${fileId}`);
           }
-          if (!existsSync(finalAbs)) {
-            // Atomic write for missing file recovery
+          const extractedMime = match[1].toLowerCase();
+          if (!ALLOWED_MIME_TYPES.has(extractedMime)) {
+            throw new HttpError(400, `Unsupported image MIME type: ${extractedMime}`);
+          }
+
+          const rawBase64 = match[2].trim();
+          if (rawBase64.length === 0) {
+            throw new HttpError(400, `Empty Base64 payload for file: ${fileId}`);
+          }
+          if (!isValidBase64String(rawBase64)) {
+            throw new HttpError(400, `Invalid Base64 syntax for file: ${fileId}`);
+          }
+
+          const buffer = Buffer.from(rawBase64, "base64");
+          if (buffer.length === 0) {
+            throw new HttpError(400, `Empty decoded image buffer for file: ${fileId}`);
+          }
+
+          const sha256 = createHash("sha256").update(buffer).digest("hex");
+          const relativePath = path.posix.join("attachments", docId, fileId).replace(/\//g, path.sep);
+          const finalAbs = path.join(cfg.dataDir, relativePath);
+
+          const existing = getAttachment(docId, fileId);
+          if (existing) {
+            if (existing.sha256 && existing.sha256 !== sha256) {
+              throw new HttpError(400, `Attachment content mismatch for existing fileId in document: ${fileId}`);
+            }
+            if (!existsSync(finalAbs)) {
+              // Atomic write for missing file recovery
+              const tempAbs = path.join(dir, `${fileId}.tmp.${randomUUID()}`);
+              writeFileSync(tempAbs, buffer);
+              renameSync(tempAbs, finalAbs);
+              newlyCreatedFiles.push(finalAbs);
+            }
+          } else {
+            // Atomic write via temporary file -> rename
             const tempAbs = path.join(dir, `${fileId}.tmp.${randomUUID()}`);
             writeFileSync(tempAbs, buffer);
             renameSync(tempAbs, finalAbs);
             newlyCreatedFiles.push(finalAbs);
-          }
-        } else {
-          // Atomic write via temporary file -> rename
-          const tempAbs = path.join(dir, `${fileId}.tmp.${randomUUID()}`);
-          writeFileSync(tempAbs, buffer);
-          renameSync(tempAbs, finalAbs);
-          newlyCreatedFiles.push(finalAbs);
 
-          db.prepare(
-            `INSERT INTO attachments (id, document_id, file_name, file_size, mime_type, file_path, sha256, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          ).run(
-            fileId,
-            docId,
-            fileId,
-            buffer.length,
-            extractedMime,
-            relativePath,
-            sha256,
-            new Date().toISOString(),
-          );
+            db.prepare(
+              `INSERT INTO attachments (id, document_id, file_name, file_size, mime_type, file_path, sha256, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            ).run(
+              fileId,
+              docId,
+              fileId,
+              buffer.length,
+              extractedMime,
+              relativePath,
+              sha256,
+              new Date().toISOString(),
+            );
+          }
         }
       }
 

@@ -19,7 +19,7 @@ export default async function DocumentPage({ params }: PageProps) {
   const user = getUserBySessionToken(token);
   if (!user) redirect("/login");
 
-  const { doc, scene } = getDocumentWithScene(id, user.id, user.role, false);
+  const { doc, scene } = getDocumentWithScene(id, user.id, user.role, false, { hydrate: false });
   const meta = documentToMeta(getDocumentRaw(id)!, user.id, user.role, false);
 
   return (

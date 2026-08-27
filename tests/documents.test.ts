@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { resetDb } from "@/lib/db";
 import { resetConfig } from "@/lib/config";
-import { createUser } from "@/lib/users";
+import { createUser, createSession } from "@/lib/users";
 import {
   createDocument,
   getDocumentRaw,
+  getDocumentWithScene,
   renameDocument,
   updateScene,
   softDelete,
@@ -19,7 +20,9 @@ import {
   addMember,
 } from "@/lib/documents";
 import { permanentDelete } from "@/lib/trash";
-import { emptyScene } from "@/lib/types";
+import { GET as getDocumentRoute } from "@/app/api/documents/[id]/route";
+import { SESSION_COOKIE } from "@/lib/http";
+import { emptyScene, type ExcalidrawScene } from "@/lib/types";
 
 describe("Documents and Permissions", () => {
   beforeEach(() => {
@@ -131,5 +134,41 @@ describe("Documents and Permissions", () => {
     // Former owner becomes EDITOR
     expect(resolvePermission(doc.id, ownerA.id, "USER")).toBe("EDITOR");
     expect(resolvePermission(doc.id, userB.id, "USER")).toBe("OWNER");
+  });
+
+  it("should return compact scene without dataURL in GET /api/documents/[id] and getDocumentWithScene by default", async () => {
+    const user = createUser("alice", "pass123", "USER");
+    const fileId = "img_file_1";
+    const rawBytes = Buffer.from("image-content", "utf-8");
+    const dataURL = `data:image/png;base64,${rawBytes.toString("base64")}`;
+    const scene: ExcalidrawScene = {
+      ...emptyScene(),
+      elements: [{ id: "e1", type: "image", fileId, isDeleted: false }],
+      files: {
+        [fileId]: { id: fileId, mimeType: "image/png", dataURL, created: Date.now() },
+      },
+    };
+    const doc = createDocument(user.id, scene, "Compact Read Doc");
+
+    // Default getDocumentWithScene must be compact
+    const { scene: compactScene } = getDocumentWithScene(doc.id, user.id, "USER", false);
+    const compactFiles = compactScene.files as Record<string, { dataURL?: string }>;
+    expect(compactFiles[fileId]).toBeDefined();
+    expect(compactFiles[fileId].dataURL).toBeUndefined();
+
+    // GET /api/documents/[id] route response must be compact
+    const session = createSession(user.id);
+    const req = new Request(`http://localhost/api/documents/${doc.id}`, {
+      headers: { cookie: `${SESSION_COOKIE}=${session.token}` },
+    });
+    const res = await getDocumentRoute(req, { params: Promise.resolve({ id: doc.id }) });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.scene.files[fileId].dataURL).toBeUndefined();
+
+    // Explicit hydrate=true should still hydrate
+    const { scene: hydratedScene } = getDocumentWithScene(doc.id, user.id, "USER", false, { hydrate: true });
+    const hydratedFiles = hydratedScene.files as Record<string, { dataURL?: string }>;
+    expect(hydratedFiles[fileId].dataURL).toBe(dataURL);
   });
 });

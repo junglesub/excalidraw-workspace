@@ -2,7 +2,7 @@ import { handleError, json, jsonError, readJson, requireUser, adminModeFrom } fr
 import { updateScene, getDocumentRaw } from "@/lib/documents";
 import { jsonToScene } from "@/lib/types";
 import { createSnapshotFromScene, snapshotDueForAutoSave, AUTO_INTERVAL } from "@/lib/versions";
-import { saveThumbnailFromBuffer } from "@/lib/thumbnails";
+import { decodePngDataURL } from "@/lib/thumbnails";
 
 export const dynamic = "force-dynamic";
 
@@ -26,15 +26,8 @@ export async function PUT(req: Request, { params }: Ctx) {
       return jsonError("scene is required", 400);
     }
     const scene = jsonToScene(JSON.stringify(body.scene));
-    const doc = updateScene(id, scene, user.id, user.role, adminMode);
-
-    let thumbBuf: Buffer | null = null;
-    const thumbnailBase64 = typeof body.thumbnailBase64 === "string" ? body.thumbnailBase64 : null;
-    if (thumbnailBase64 && thumbnailBase64.includes("base64,")) {
-      const b64 = thumbnailBase64.split("base64,")[1];
-      thumbBuf = Buffer.from(b64, "base64");
-      saveThumbnailFromBuffer(id, thumbBuf);
-    }
+    const thumbBuf = decodePngDataURL(body.thumbnailBase64);
+    updateScene(id, scene, user.id, user.role, adminMode, { thumbnailBuffer: thumbBuf });
 
     let snapshotCreated = false;
     const wantSnapshot = body.snapshot === true;

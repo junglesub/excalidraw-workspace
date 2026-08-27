@@ -8,6 +8,7 @@ import { createDocument } from "@/lib/documents";
 import {
   scanStorage,
   cleanOrphans,
+  cleanUnreferencedAttachments,
   runVacuum,
   getSqliteMetrics,
 } from "@/lib/storage_maintenance";
@@ -244,5 +245,230 @@ describe("Storage & Database Maintenance", () => {
     expect(res.before.pageCount).toBeGreaterThan(0);
     expect(res.after.pageCount).toBeGreaterThan(0);
     expect(res.timestamp).toBeDefined();
+  });
+
+  it("should identify unreferenced attachment rows older than 24 hours while respecting 24h grace period and snapshot retention", () => {
+    const user = createUser("carol", "pass123", "USER");
+    const doc = createDocument(user.id, emptyScene(), "Unreferenced Test Doc");
+    const db = getDb();
+    const cfg = config();
+    const resolvedAttachmentsDir = path.resolve(cfg.attachmentsDir);
+
+    const docDir = path.join(resolvedAttachmentsDir, doc.id);
+    fs.mkdirSync(docDir, { recursive: true });
+
+    // File 1: Referenced by active document scene (never unreferenced)
+    const refScene = {
+      ...emptyScene(),
+      elements: [{ id: "el1", type: "image", fileId: "file-referenced-active" }],
+      files: {
+        "file-referenced-active": { id: "file-referenced-active", mimeType: "image/png", created: 1 },
+      },
+    };
+    db.prepare("UPDATE documents SET scene = ? WHERE id = ?;").run(JSON.stringify(refScene), doc.id);
+    const activeFilePath = path.join(docDir, "file-referenced-active");
+    fs.writeFileSync(activeFilePath, Buffer.from("active-bytes"));
+    db.prepare("INSERT INTO attachments (id, document_id, file_name, file_size, mime_type, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);")
+      .run("file-referenced-active", doc.id, "active.png", 12, "image/png", `attachments/${doc.id}/file-referenced-active`, new Date(Date.now() - 100000 * 1000).toISOString());
+
+    // File 2: Referenced by retained document version/snapshot (never unreferenced)
+    const verScene = {
+      ...emptyScene(),
+      elements: [{ id: "el2", type: "image", fileId: "file-referenced-version" }],
+      files: {
+        "file-referenced-version": { id: "file-referenced-version", mimeType: "image/png", created: 2 },
+      },
+    };
+    db.prepare("INSERT INTO document_versions (id, document_id, version_number, scene, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?);")
+      .run("ver-1", doc.id, 1, JSON.stringify(verScene), user.id, new Date(Date.now() - 100000 * 1000).toISOString());
+    const verFilePath = path.join(docDir, "file-referenced-version");
+    fs.writeFileSync(verFilePath, Buffer.from("version-bytes"));
+    db.prepare("INSERT INTO attachments (id, document_id, file_name, file_size, mime_type, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);")
+      .run("file-referenced-version", doc.id, "version.png", 13, "image/png", `attachments/${doc.id}/file-referenced-version`, new Date(Date.now() - 100000 * 1000).toISOString());
+
+    // File 3: Unreferenced, created 1 hour ago (within 24h grace period -> NOT eligible yet)
+    const recentFilePath = path.join(docDir, "file-unreferenced-recent");
+    fs.writeFileSync(recentFilePath, Buffer.from("recent-bytes"));
+    db.prepare("INSERT INTO attachments (id, document_id, file_name, file_size, mime_type, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);")
+      .run("file-unreferenced-recent", doc.id, "recent.png", 12, "image/png", `attachments/${doc.id}/file-unreferenced-recent`, new Date(Date.now() - 3600 * 1000).toISOString());
+
+    // File 4: Unreferenced, created 30 hours ago (>24h grace period -> ELIGIBLE)
+    const oldFilePath = path.join(docDir, "file-unreferenced-old");
+    fs.writeFileSync(oldFilePath, Buffer.from("old-bytes"));
+    db.prepare("INSERT INTO attachments (id, document_id, file_name, file_size, mime_type, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);")
+      .run("file-unreferenced-old", doc.id, "old.png", 9, "image/png", `attachments/${doc.id}/file-unreferenced-old`, new Date(Date.now() - 30 * 3600 * 1000).toISOString());
+
+    const scan = scanStorage();
+    expect(scan.unreferencedAttachments).toBeDefined();
+    expect(scan.unreferencedAttachments.totalCount).toBe(1);
+    expect(scan.unreferencedAttachments.items[0].attachmentId).toBe("file-unreferenced-old");
+    expect(scan.unreferencedAttachments.items[0].byteSize).toBe(9);
+    expect(scan.unreferencedAttachments.gracePeriodSeconds).toBe(86400);
+  });
+
+  it("should safely purge unreferenced attachment DB rows and regular disk files upon confirmation, preserving missing files and symlinks with warnings", () => {
+    const user = createUser("dave", "pass123", "USER");
+    const doc = createDocument(user.id, emptyScene(), "Purge Test Doc");
+    const db = getDb();
+    const cfg = config();
+    const resolvedAttachmentsDir = path.resolve(cfg.attachmentsDir);
+    const docDir = path.join(resolvedAttachmentsDir, doc.id);
+    fs.mkdirSync(docDir, { recursive: true });
+
+    // Candidate A: Regular file >24h old -> should be deleted from disk and DB
+    const regularFilePath = path.join(docDir, "att-regular-old");
+    fs.writeFileSync(regularFilePath, Buffer.from("regular-content"));
+    db.prepare("INSERT INTO attachments (id, document_id, file_name, file_size, mime_type, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);")
+      .run("att-regular-old", doc.id, "regular.png", 15, "image/png", `attachments/${doc.id}/att-regular-old`, new Date(Date.now() - 30 * 3600 * 1000).toISOString());
+
+    // Candidate B: DB row with missing physical file >24h old -> row must be preserved and warning returned
+    db.prepare("INSERT INTO attachments (id, document_id, file_name, file_size, mime_type, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);")
+      .run("att-missing-old", doc.id, "missing.png", 100, "image/png", `attachments/${doc.id}/att-missing-old`, new Date(Date.now() - 30 * 3600 * 1000).toISOString());
+
+    // Unconfirmed call must throw
+    expect(() => cleanUnreferencedAttachments(false)).toThrow(/confirmation required/i);
+
+    // Confirmed cleanup
+    const result = cleanUnreferencedAttachments(true);
+    expect(result.deletedRows).toBe(1);
+    expect(result.reclaimedBytes).toBe(15);
+    expect(result.deletedFiles).toContain(`attachments/${doc.id}/att-regular-old`);
+    expect(fs.existsSync(regularFilePath)).toBe(false);
+
+    // Candidate A row must be deleted from DB
+    const rowA = db.prepare("SELECT * FROM attachments WHERE id = ?").get("att-regular-old");
+    expect(rowA).toBeUndefined();
+
+    // Candidate B row (missing file) must be preserved in DB
+    const rowB = db.prepare("SELECT * FROM attachments WHERE id = ?").get("att-missing-old");
+    expect(rowB).toBeDefined();
+    expect(result.warnings?.some((w) => w.includes("att-missing-old"))).toBe(true);
+  });
+
+  it("should support POST /api/admin/storage with action: cleanup-unreferenced and confirm guard", async () => {
+    const admin = createUser("admin_unref", "pass123", "ADMIN");
+    const session = createSession(admin.id);
+    const doc = createDocument(admin.id, emptyScene(), "API Unref Doc");
+    const db = getDb();
+    const cfg = config();
+    const docDir = path.join(path.resolve(cfg.attachmentsDir), doc.id);
+    fs.mkdirSync(docDir, { recursive: true });
+
+    const filePath = path.join(docDir, "api-unref-file");
+    fs.writeFileSync(filePath, Buffer.from("api-bytes"));
+    db.prepare("INSERT INTO attachments (id, document_id, file_name, file_size, mime_type, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);")
+      .run("api-unref-file", doc.id, "api.png", 9, "image/png", `attachments/${doc.id}/api-unref-file`, new Date(Date.now() - 30 * 3600 * 1000).toISOString());
+
+    // Unconfirmed POST -> 400
+    const unconfirmedReq = new Request("http://localhost/api/admin/storage", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        cookie: `${SESSION_COOKIE}=${session.token}`,
+      },
+      body: JSON.stringify({ action: "cleanup-unreferenced", confirm: false }),
+    });
+    const unconfirmedRes = await postStorageRoute(unconfirmedReq);
+    expect(unconfirmedRes.status).toBe(400);
+
+    // Confirmed POST -> 200
+    const confirmedReq = new Request("http://localhost/api/admin/storage", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        cookie: `${SESSION_COOKIE}=${session.token}`,
+      },
+      body: JSON.stringify({ action: "cleanup-unreferenced", confirm: true }),
+    });
+    const confirmedRes = await postStorageRoute(confirmedReq);
+    expect(confirmedRes.status).toBe(200);
+    const resBody = await confirmedRes.json();
+    expect(resBody.deletedRows).toBe(1);
+    expect(resBody.reclaimedBytes).toBe(9);
+  });
+
+  it("should preserve symlink attachments and DB rows during cleanUnreferencedAttachments and return warning", () => {
+    const user = createUser("eve", "pass123", "USER");
+    const doc = createDocument(user.id, emptyScene(), "Symlink Unref Doc");
+    const db = getDb();
+    const cfg = config();
+    const resolvedAttachmentsDir = path.resolve(cfg.attachmentsDir);
+
+    const externalTargetDir = path.resolve(cfg.dataDir, "external-unref-dir");
+    fs.mkdirSync(externalTargetDir, { recursive: true });
+    const externalTargetFile = path.join(externalTargetDir, "do-not-delete-unref.png");
+    fs.writeFileSync(externalTargetFile, Buffer.from("precious-target-bytes"));
+
+    const docDir = path.join(resolvedAttachmentsDir, doc.id);
+    fs.mkdirSync(docDir, { recursive: true });
+    const symlinkPath = path.join(docDir, "symlink-unref-id");
+
+    let symlinkCreated = false;
+    try {
+      fs.symlinkSync(externalTargetFile, symlinkPath);
+      symlinkCreated = true;
+    } catch {
+      symlinkCreated = false;
+    }
+
+    if (!symlinkCreated) {
+      return;
+    }
+
+    try {
+      db.prepare("INSERT INTO attachments (id, document_id, file_name, file_size, mime_type, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);")
+        .run("symlink-unref-id", doc.id, "symlink.png", 20, "image/png", `attachments/${doc.id}/symlink-unref-id`, new Date(Date.now() - 30 * 3600 * 1000).toISOString());
+
+      const result = cleanUnreferencedAttachments(true);
+
+      // Symlink and target file must remain intact
+      expect(fs.existsSync(symlinkPath)).toBe(true);
+      expect(fs.existsSync(externalTargetFile)).toBe(true);
+
+      // DB row must be preserved
+      const row = db.prepare("SELECT * FROM attachments WHERE id = ?").get("symlink-unref-id");
+      expect(row).toBeDefined();
+
+      // Warning returned
+      expect(result.warnings?.some((w) => w.includes("symlink-unref-id"))).toBe(true);
+    } finally {
+      try {
+        fs.unlinkSync(symlinkPath);
+      } catch {
+        // ignore
+      }
+      try {
+        fs.unlinkSync(externalTargetFile);
+        fs.rmdirSync(externalTargetDir);
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  it("should reject unauthenticated and non-admin POST /api/admin/storage requests for cleanup-unreferenced", async () => {
+    const normalUser = createUser("normal_user", "pass123", "USER");
+    const normalSession = createSession(normalUser.id);
+
+    // Unauthenticated POST -> 401
+    const unauthReq = new Request("http://localhost/api/admin/storage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "cleanup-unreferenced", confirm: true }),
+    });
+    const unauthRes = await postStorageRoute(unauthReq);
+    expect(unauthRes.status).toBe(401);
+
+    // Regular USER POST -> 403
+    const userReq = new Request("http://localhost/api/admin/storage", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        cookie: `${SESSION_COOKIE}=${normalSession.token}`,
+      },
+      body: JSON.stringify({ action: "cleanup-unreferenced", confirm: true }),
+    });
+    const userRes = await postStorageRoute(userReq);
+    expect(userRes.status).toBe(403);
   });
 });

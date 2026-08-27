@@ -18,7 +18,7 @@ export async function GET(req: Request, { params }: Ctx) {
     const { id } = await params;
     const user = requireUser(req);
     const adminMode = adminModeFrom(req, user);
-    const { scene, permission } = getDocumentWithScene(id, user.id, user.role, adminMode);
+    const { scene, permission } = getDocumentWithScene(id, user.id, user.role, adminMode, { hydrate: false });
     const doc = getDocumentRaw(id)!;
     const meta = documentToMeta(doc, user.id, user.role, adminMode);
     return json({ document: meta, scene, permission });

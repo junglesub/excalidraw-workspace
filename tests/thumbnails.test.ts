@@ -8,6 +8,7 @@ import {
   saveThumbnail,
   saveThumbnailFromBuffer,
   removeThumbnail,
+  decodePngDataURL,
 } from "@/lib/thumbnails";
 import { GET as getThumbnailRoute } from "@/app/api/thumbnails/[...path]/route";
 import { SESSION_COOKIE } from "@/lib/http";
@@ -55,6 +56,27 @@ describe("Thumbnail Rendering and Storage", () => {
     expect(result.relativePath).toBe("thumbnails/client-real-thumb.png");
     expect(existsSync(result.absolutePath)).toBe(true);
 
+    removeThumbnail(result.relativePath);
+  });
+
+  it("should decode a valid PNG data URL and reject invalid payloads", () => {
+    const rawPng = renderScenePng(emptyScene(), 40, 40);
+    const dataURL = `data:image/png;base64,${rawPng.toString("base64")}`;
+    const decoded = decodePngDataURL(dataURL);
+    expect(decoded).not.toBeNull();
+    expect(decoded?.equals(rawPng)).toBe(true);
+
+    expect(decodePngDataURL("data:image/png;base64,AAAA")).toBeNull();
+    expect(decodePngDataURL("not-a-data-url")).toBeNull();
+    expect(decodePngDataURL(undefined)).toBeNull();
+  });
+
+  it("should fall back to a placeholder PNG when the client buffer is not a PNG", () => {
+    const result = saveThumbnailFromBuffer("bad-thumb", Buffer.from("not-a-png"));
+    expect(existsSync(result.absolutePath)).toBe(true);
+    const saved = readFileSync(result.absolutePath);
+    expect(saved[0]).toBe(0x89);
+    expect(saved[1]).toBe(0x50);
     removeThumbnail(result.relativePath);
   });
 

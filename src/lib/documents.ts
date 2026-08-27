@@ -1,6 +1,6 @@
 import { getDb, transaction } from "./db";
 import { getById as getUserId } from "./users";
-import { saveThumbnail } from "./thumbnails";
+import { saveThumbnail, saveThumbnailFromBuffer } from "./thumbnails";
 import { compactSceneFiles, hydrateSceneFiles, gcUnreferencedAttachments } from "./attachments";
 import type {
   DocumentMeta,
@@ -100,7 +100,7 @@ export function createDocument(userId: string, scene: ExcalidrawScene, title = "
     ).run(id, title, userId, thumbPath, now, now);
 
     // 2. Compact scene (extracts binary files and inserts attachments)
-    const compactScene = compactSceneFiles(id, scene);
+    const compactScene = compactSceneFiles(id, scene, { allowInlineDataUrl: true });
     db.prepare("UPDATE documents SET scene = ? WHERE id = ?").run(sceneToJson(compactScene), id);
 
     return getDocumentRaw(id)!;
@@ -206,12 +206,20 @@ export function updateScene(
   userId: string,
   role: "USER" | "ADMIN",
   adminMode = false,
+  options: { allowInlineDataUrl?: boolean; thumbnailBuffer?: Buffer | null } = {
+    allowInlineDataUrl: false,
+  },
 ): DocumentRow {
   requireWrite(docId, userId, role, adminMode);
-  const compactScene = compactSceneFiles(docId, scene);
+  const compactScene = compactSceneFiles(docId, scene, options);
   let thumbPath: string | null = null;
   try {
-    thumbPath = saveThumbnail(docId, scene).relativePath;
+    if (options.thumbnailBuffer) {
+      thumbPath = saveThumbnailFromBuffer(docId, options.thumbnailBuffer).relativePath;
+    } else if (!getDocumentRaw(docId)?.thumbnail_path) {
+      // Only synthesize a placeholder when the document has no thumbnail yet.
+      thumbPath = saveThumbnail(docId, scene).relativePath;
+    }
   } catch {
     // ignore
   }
@@ -225,13 +233,14 @@ export function updateScene(
 export function getDocumentWithScene(
   docId: string,
   userId: string,
-  role: "USER" | "ADMIN",
-  adminMode: boolean,
+  role: "USER" | "ADMIN" = "USER",
+  adminMode = false,
+  options: { hydrate?: boolean } = { hydrate: false },
 ) {
   const { doc, permission } = requireRead(docId, userId, role, adminMode);
   const rawScene = jsonToScene(doc.scene);
-  const hydratedScene = hydrateSceneFiles(docId, rawScene);
-  return { doc, scene: hydratedScene, permission };
+  const scene = options.hydrate ? hydrateSceneFiles(docId, rawScene) : rawScene;
+  return { doc, scene, permission };
 }
 
 export function softDelete(docId: string, userId: string, role: "USER" | "ADMIN"): void {

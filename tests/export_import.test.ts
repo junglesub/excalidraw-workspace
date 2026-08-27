@@ -19,10 +19,15 @@ import {
   getAttachment,
 } from "@/lib/attachments";
 import { GET as getAttachmentRoute } from "@/app/api/attachments/[attachmentId]/route";
+import { GET as getExportRoute } from "@/app/api/documents/[id]/export/route";
+import { POST as postAttachmentRoute } from "@/app/api/documents/[id]/attachments/route";
+import { POST as postSaveRoute } from "@/app/api/documents/[id]/save/route";
+import { PUT as putSceneRoute } from "@/app/api/documents/[id]/scene/route";
 import { jsonToScene, sceneToJson, emptyScene } from "@/lib/types";
 import type { ExcalidrawScene } from "@/lib/types";
 import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
+import { renderScenePng } from "@/lib/thumbnails";
 
 describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () => {
   beforeEach(() => {
@@ -133,8 +138,8 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
     expect(atts[0].id).toBe(fileId);
     expect(atts[0].file_size).toBe(rawImageBytes.length);
 
-    // 2. Read back via getDocumentWithScene (must hydrate dataURL)
-    const { scene: hydrated } = getDocumentWithScene(doc.id, user.id, "USER", false);
+    // 2. Read back via getDocumentWithScene with hydrate: true (must hydrate dataURL)
+    const { scene: hydrated } = getDocumentWithScene(doc.id, user.id, "USER", false, { hydrate: true });
     const files = hydrated.files as Record<string, { dataURL?: string }>;
     expect(files[fileId]).toBeDefined();
     expect(files[fileId].dataURL).toBe(dataURL);
@@ -180,9 +185,9 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
     expect(readFileSync(pathA).toString("utf-8")).toBe("content-for-doc-a");
     expect(readFileSync(pathB).toString("utf-8")).toBe("different-content-for-doc-b");
 
-    // Both hydrate to their respective content
-    const { scene: hydratedA } = getDocumentWithScene(docA.id, user.id, "USER", false);
-    const { scene: hydratedB } = getDocumentWithScene(docB.id, user.id, "USER", false);
+    // Both hydrate to their respective content with hydrate: true
+    const { scene: hydratedA } = getDocumentWithScene(docA.id, user.id, "USER", false, { hydrate: true });
+    const { scene: hydratedB } = getDocumentWithScene(docB.id, user.id, "USER", false, { hydrate: true });
     expect((hydratedA.files as Record<string, { dataURL?: string }>)[sameFileId].dataURL).toBe(dataURL_A);
     expect((hydratedB.files as Record<string, { dataURL?: string }>)[sameFileId].dataURL).toBe(dataURL_B);
 
@@ -194,7 +199,7 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
     expect(existsSync(pathB)).toBe(true);
     expect(readFileSync(pathB).toString("utf-8")).toBe("different-content-for-doc-b");
 
-    const { scene: hydratedBAfter } = getDocumentWithScene(docB.id, user.id, "USER", false);
+    const { scene: hydratedBAfter } = getDocumentWithScene(docB.id, user.id, "USER", false, { hydrate: true });
     expect((hydratedBAfter.files as Record<string, { dataURL?: string }>)[sameFileId].dataURL).toBe(dataURL_B);
   });
 
@@ -286,8 +291,8 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
     const diskPath = path.join(config().attachmentsDir, docId, fileId);
     expect(existsSync(diskPath)).toBe(true);
 
-    // Verify getDocumentWithScene hydrates correctly
-    const { scene: hydrated } = getDocumentWithScene(docId, user.id, "USER", false);
+    // Verify getDocumentWithScene with hydrate: true hydrates correctly
+    const { scene: hydrated } = getDocumentWithScene(docId, user.id, "USER", false, { hydrate: true });
     expect((hydrated.files as Record<string, { dataURL?: string }>)[fileId].dataURL).toBe(dataURL);
   });
 
@@ -351,8 +356,8 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
     unlinkSync(diskPath);
     expect(existsSync(diskPath)).toBe(false);
 
-    // 1. Updating with the valid scene recovers the missing file on disk
-    updateScene(doc.id, scene, user.id, "USER");
+    // 1. Updating with the valid scene recovers the missing file on disk (with allowInlineDataUrl: true)
+    updateScene(doc.id, scene, user.id, "USER", false, { allowInlineDataUrl: true });
     expect(existsSync(diskPath)).toBe(true);
 
     // 2. Now delete it again, but this time pass another corrupted file to trigger rollback
@@ -373,7 +378,7 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
       },
     };
 
-    expect(() => updateScene(doc.id, corruptScene, user.id, "USER")).toThrow();
+    expect(() => updateScene(doc.id, corruptScene, user.id, "USER", false, { allowInlineDataUrl: true })).toThrow();
     // Since updateScene failed, recovered file must be safely rolled back
     expect(existsSync(diskPath)).toBe(false);
   });
@@ -395,8 +400,8 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
     };
 
     const doc = createDocument(user.id, sceneWithImage, "Prune GC Doc");
-    // Create 1 snapshot containing the image
-    createSnapshotFromScene(doc.id, sceneWithImage, user.id, false);
+    // Create 1 snapshot containing the image (from compact doc scene)
+    createSnapshotFromScene(doc.id, jsonToScene(doc.scene), user.id, false);
 
     const diskPath = path.join(config().attachmentsDir, doc.id, fileId);
     expect(existsSync(diskPath)).toBe(true);
@@ -489,5 +494,215 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
     } finally {
       process.env.NEXT_RUNTIME = prevRuntime;
     }
+  });
+
+  it("should return fully hydrated standalone scene with dataURL on GET /api/documents/[id]/export", async () => {
+    const user = createUser("alice", "pass123", "USER");
+    const fileId = "export_img_1";
+    const rawBytes = Buffer.from("export-image-content", "utf-8");
+    const dataURL = `data:image/png;base64,${rawBytes.toString("base64")}`;
+    const scene: ExcalidrawScene = {
+      ...emptyScene(),
+      elements: [{ id: "e1", type: "image", fileId, isDeleted: false }],
+      files: {
+        [fileId]: { id: fileId, mimeType: "image/png", dataURL, created: Date.now() },
+      },
+    };
+    const doc = createDocument(user.id, scene, "Export Doc");
+
+    const session = createSession(user.id);
+    const req = new Request(`http://localhost/api/documents/${doc.id}/export`, {
+      headers: { cookie: `${SESSION_COOKIE}=${session.token}` },
+    });
+    const res = await getExportRoute(req, { params: Promise.resolve({ id: doc.id }) });
+    expect(res.status).toBe(200);
+    const content = await res.text();
+    const parsed = JSON.parse(content);
+    expect(parsed.files[fileId]).toBeDefined();
+    expect(parsed.files[fileId].dataURL).toBe(dataURL);
+  });
+
+  it("should handle deterministic fileId uploads: 201 on new, 200 idempotent on match, 409 on conflict, UUID fallback", async () => {
+    const user = createUser("alice", "pass123", "USER");
+    const doc = createDocument(user.id, emptyScene(), "Upload Doc");
+    const session = createSession(user.id);
+
+    const rawBytes = Buffer.from("test-binary-png-data", "utf-8");
+    const customFileId = "custom_file_123";
+
+    // 1. Upload new attachment with deterministic fileId -> 201 Created
+    const form1 = new FormData();
+    form1.append("file", new File([rawBytes], "image.png", { type: "image/png" }));
+    form1.append("fileId", customFileId);
+
+    const req1 = new Request(`http://localhost/api/documents/${doc.id}/attachments`, {
+      method: "POST",
+      headers: { cookie: `${SESSION_COOKIE}=${session.token}` },
+      body: form1,
+    });
+    const res1 = await postAttachmentRoute(req1, { params: Promise.resolve({ id: doc.id }) });
+    expect(res1.status).toBe(201);
+    const body1 = await res1.json();
+    expect(body1.attachment.id).toBe(customFileId);
+
+    // 2. Same fileId + same bytes -> 200 OK (idempotent no-op)
+    const form2 = new FormData();
+    form2.append("file", new File([rawBytes], "image.png", { type: "image/png" }));
+    form2.append("fileId", customFileId);
+
+    const req2 = new Request(`http://localhost/api/documents/${doc.id}/attachments`, {
+      method: "POST",
+      headers: { cookie: `${SESSION_COOKIE}=${session.token}` },
+      body: form2,
+    });
+    const res2 = await postAttachmentRoute(req2, { params: Promise.resolve({ id: doc.id }) });
+    expect(res2.status).toBe(200);
+    const body2 = await res2.json();
+    expect(body2.attachment.id).toBe(customFileId);
+
+    // 3. Same fileId + different bytes -> 409 Conflict
+    const differentBytes = Buffer.from("completely-different-content", "utf-8");
+    const form3 = new FormData();
+    form3.append("file", new File([differentBytes], "image.png", { type: "image/png" }));
+    form3.append("fileId", customFileId);
+
+    const req3 = new Request(`http://localhost/api/documents/${doc.id}/attachments`, {
+      method: "POST",
+      headers: { cookie: `${SESSION_COOKIE}=${session.token}` },
+      body: form3,
+    });
+    const res3 = await postAttachmentRoute(req3, { params: Promise.resolve({ id: doc.id }) });
+    expect(res3.status).toBe(409);
+
+    // 4. Upload with omitted fileId -> 201 with server generated UUID
+    const form4 = new FormData();
+    form4.append("file", new File([rawBytes], "generic.png", { type: "image/png" }));
+
+    const req4 = new Request(`http://localhost/api/documents/${doc.id}/attachments`, {
+      method: "POST",
+      headers: { cookie: `${SESSION_COOKIE}=${session.token}` },
+      body: form4,
+    });
+    const res4 = await postAttachmentRoute(req4, { params: Promise.resolve({ id: doc.id }) });
+    expect(res4.status).toBe(201);
+    const body4 = await res4.json();
+    expect(body4.attachment.id).toBeDefined();
+    expect(body4.attachment.id).not.toBe(customFileId);
+
+    // 5. Invalid fileId format -> 400 Bad Request
+    const form5 = new FormData();
+    form5.append("file", new File([rawBytes], "image.png", { type: "image/png" }));
+    form5.append("fileId", "../path_traversal");
+
+    const req5 = new Request(`http://localhost/api/documents/${doc.id}/attachments`, {
+      method: "POST",
+      headers: { cookie: `${SESSION_COOKIE}=${session.token}` },
+      body: form5,
+    });
+    const res5 = await postAttachmentRoute(req5, { params: Promise.resolve({ id: doc.id }) });
+    expect(res5.status).toBe(400);
+  });
+
+  it("should reject inline dataURL on steady-state /save and /scene routes with 400 Bad Request", async () => {
+    const user = createUser("alice", "pass123", "USER");
+    const doc = createDocument(user.id, emptyScene(), "Save Reject Doc");
+    const session = createSession(user.id);
+
+    const dirtyScene: ExcalidrawScene = {
+      ...emptyScene(),
+      elements: [{ id: "e1", type: "image", fileId: "file_1", isDeleted: false }],
+      files: {
+        file_1: {
+          id: "file_1",
+          mimeType: "image/png",
+          dataURL: "data:image/png;base64,aGVsbG8=",
+          created: Date.now(),
+        },
+      },
+    };
+
+    // 1. POST /api/documents/[id]/save must reject inline dataURL
+    const saveReq = new Request(`http://localhost/api/documents/${doc.id}/save`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        cookie: `${SESSION_COOKIE}=${session.token}`,
+      },
+      body: JSON.stringify({ scene: dirtyScene }),
+    });
+    const saveRes = await postSaveRoute(saveReq, { params: Promise.resolve({ id: doc.id }) });
+    expect(saveRes.status).toBe(400);
+
+    // 2. PUT /api/documents/[id]/scene must reject inline dataURL
+    const sceneReq = new Request(`http://localhost/api/documents/${doc.id}/scene`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        cookie: `${SESSION_COOKIE}=${session.token}`,
+      },
+      body: JSON.stringify({ scene: dirtyScene }),
+    });
+    const sceneRes = await putSceneRoute(sceneReq, { params: Promise.resolve({ id: doc.id }) });
+    expect(sceneRes.status).toBe(400);
+  });
+
+  it("should persist a client-captured PNG thumbnail on manual save instead of the placeholder fallback", async () => {
+    const user = createUser("alice", "pass123", "USER");
+    const doc = createDocument(user.id, emptyScene(), "Client Thumb Doc");
+    const session = createSession(user.id);
+
+    const clientPng = renderScenePng(emptyScene(), 64, 36);
+    const thumbnailBase64 = `data:image/png;base64,${clientPng.toString("base64")}`;
+    const placeholder = renderScenePng(emptyScene(), 320, 180);
+
+    const saveReq = new Request(`http://localhost/api/documents/${doc.id}/save`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        cookie: `${SESSION_COOKIE}=${session.token}`,
+      },
+      body: JSON.stringify({
+        scene: { ...emptyScene(), elements: [{ id: "rect-1", type: "rectangle" }] },
+        thumbnailBase64,
+      }),
+    });
+    const saveRes = await postSaveRoute(saveReq, { params: Promise.resolve({ id: doc.id }) });
+    expect(saveRes.status).toBe(200);
+    const saveBody = await saveRes.json();
+    const thumbAbs = path.join(config().dataDir, saveBody.snapshot.thumbnail_path);
+    const savedBytes = readFileSync(thumbAbs);
+    expect(savedBytes.equals(clientPng)).toBe(true);
+    expect(savedBytes.equals(placeholder)).toBe(false);
+  });
+
+  it("should generate server thumbnail and persist snapshot on manual save without thumbnailBase64", async () => {
+    const user = createUser("alice", "pass123", "USER");
+    const doc = createDocument(user.id, emptyScene(), "Thumbnail Save Doc");
+    const session = createSession(user.id);
+
+    const cleanScene: ExcalidrawScene = {
+      ...emptyScene(),
+      elements: [{ id: "rect-1", type: "rectangle", x: 10, y: 10, width: 100, height: 100 }],
+    };
+
+    const saveReq = new Request(`http://localhost/api/documents/${doc.id}/save`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        cookie: `${SESSION_COOKIE}=${session.token}`,
+      },
+      body: JSON.stringify({ scene: cleanScene }), // thumbnailBase64 completely omitted
+    });
+    const saveRes = await postSaveRoute(saveReq, { params: Promise.resolve({ id: doc.id }) });
+    expect(saveRes.status).toBe(200);
+    const saveBody = await saveRes.json();
+    expect(saveBody.ok).toBe(true);
+    expect(saveBody.snapshot).toBeDefined();
+    expect(saveBody.snapshot.thumbnail_path).toBeDefined();
+
+    // Verify thumbnail exists physically on disk
+    const thumbAbs = path.join(config().dataDir, saveBody.snapshot.thumbnail_path);
+    expect(existsSync(thumbAbs)).toBe(true);
+    expect(readFileSync(thumbAbs).length).toBeGreaterThan(0);
   });
 });

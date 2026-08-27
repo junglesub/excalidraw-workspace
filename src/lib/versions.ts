@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { config } from "./config";
 import { getDb, transaction } from "./db";
 import { getDocumentRaw, MAX_VERSIONS, AUTO_SNAPSHOT_INTERVAL_MS, requireWrite } from "./documents";
 import { saveThumbnail, saveThumbnailFromBuffer, removeThumbnail } from "./thumbnails";
@@ -21,6 +24,7 @@ function insertSnapshot(
   createdBy: string,
   makeThumbnail: boolean,
   thumbnailBuffer?: Buffer | null,
+  options?: { allowInlineDataUrl?: boolean },
 ): DocumentVersionRow {
   const db = getDb();
   const maxRow = db
@@ -29,25 +33,30 @@ function insertSnapshot(
   const versionNumber = (maxRow?.m ?? 0) + 1;
   const id = crypto.randomUUID();
   const created = nowIso();
-  const compactScene = compactSceneFiles(docId, scene);
+  const compactScene = compactSceneFiles(docId, scene, { allowInlineDataUrl: options?.allowInlineDataUrl ?? false });
 
   let thumbnailPath: string | null = null;
   if (makeThumbnail) {
     if (thumbnailBuffer) {
-      const thumb = saveThumbnailFromBuffer(`${docId}-v${versionNumber}`, thumbnailBuffer);
-      thumbnailPath = thumb.relativePath;
+      const versionThumb = saveThumbnailFromBuffer(`${docId}-v${versionNumber}`, thumbnailBuffer);
+      thumbnailPath = versionThumb.relativePath;
       try {
-        saveThumbnailFromBuffer(docId, thumbnailBuffer);
-        db.prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?").run(thumbnailPath, docId);
+        const docThumb = saveThumbnailFromBuffer(docId, thumbnailBuffer);
+        db.prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?").run(docThumb.relativePath, docId);
       } catch {
         // ignore
       }
     } else {
-      const thumb = saveThumbnail(`${docId}-v${versionNumber}`, scene);
-      thumbnailPath = thumb.relativePath;
+      const versionThumb = saveThumbnail(`${docId}-v${versionNumber}`, scene);
+      thumbnailPath = versionThumb.relativePath;
       try {
-        const docThumb = saveThumbnail(docId, scene);
-        db.prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?").run(docThumb.relativePath, docId);
+        const doc = getDocumentRaw(docId);
+        const cfg = config();
+        const docThumbPath = `thumbnails/${docId}.png`;
+        const docThumbAbs = path.resolve(cfg.dataDir, docThumbPath);
+        if (!doc?.thumbnail_path && existsSync(docThumbAbs)) {
+          db.prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?").run(docThumbPath, docId);
+        }
       } catch {
         // ignore
       }
@@ -71,7 +80,9 @@ function insertSnapshot(
     .all(docId, docId, MAX_VERSIONS) as { thumbnail_path: string | null }[];
 
   for (const t of trimmed) {
-    removeThumbnail(t.thumbnail_path);
+    if (t.thumbnail_path && t.thumbnail_path !== `thumbnails/${docId}.png` && t.thumbnail_path !== `thumbnails\\${docId}.png`) {
+      removeThumbnail(t.thumbnail_path);
+    }
   }
 
   db.prepare(
@@ -96,10 +107,11 @@ export function createSnapshotFromDoc(
   createdBy: string,
   makeThumbnail = true,
   thumbnailBuffer?: Buffer | null,
+  options?: { allowInlineDataUrl?: boolean },
 ): DocumentVersionRow {
   const doc = getDocumentRaw(docId);
   if (!doc) throw new HttpError(404, "Document not found");
-  return insertSnapshot(docId, jsonToScene(doc.scene), createdBy, makeThumbnail, thumbnailBuffer);
+  return insertSnapshot(docId, jsonToScene(doc.scene), createdBy, makeThumbnail, thumbnailBuffer, options);
 }
 
 export function createSnapshotFromScene(
@@ -108,8 +120,9 @@ export function createSnapshotFromScene(
   createdBy: string,
   makeThumbnail = true,
   thumbnailBuffer?: Buffer | null,
+  options?: { allowInlineDataUrl?: boolean },
 ): DocumentVersionRow {
-  return insertSnapshot(docId, scene, createdBy, makeThumbnail, thumbnailBuffer);
+  return insertSnapshot(docId, scene, createdBy, makeThumbnail, thumbnailBuffer, options);
 }
 
 export function getVersion(id: string): DocumentVersionRow | undefined {
@@ -166,13 +179,41 @@ export function restoreVersion(
     getDb()
       .prepare("UPDATE documents SET scene = ?, updated_at = ? WHERE id = ?")
       .run(sceneToJson(compact), nowIso(), docId);
-    // Commit the restore as a new current state snapshot.
-    const newSnapshot = insertSnapshot(docId, scene, actorId, true);
-    // Refresh the document-level thumbnail too.
-    const thumb = saveThumbnail(docId, scene);
-    getDb()
-      .prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?")
-      .run(thumb.relativePath, docId);
+
+    const cfg = config();
+    let versionThumbBuf: Buffer | null = null;
+    if (version.thumbnail_path) {
+      const versionThumbAbs = path.resolve(cfg.dataDir, version.thumbnail_path);
+      if (existsSync(versionThumbAbs)) {
+        try {
+          versionThumbBuf = readFileSync(versionThumbAbs);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    // Commit the restore as a new current state snapshot using the version's thumbnail if available
+    const newSnapshot = insertSnapshot(docId, scene, actorId, true, versionThumbBuf);
+
+    // If version had a real thumbnail, also update document-level thumbnail
+    if (versionThumbBuf) {
+      const docThumb = saveThumbnailFromBuffer(docId, versionThumbBuf);
+      getDb()
+        .prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?")
+        .run(docThumb.relativePath, docId);
+    } else {
+      // Keep existing thumbnails/<docId>.png or existing valid thumbnail_path without clobbering with stripes
+      const doc = getDocumentRaw(docId);
+      const docThumbPath = `thumbnails/${docId}.png`;
+      const docThumbAbs = path.resolve(cfg.dataDir, docThumbPath);
+      if (!doc?.thumbnail_path || (!existsSync(path.resolve(cfg.dataDir, doc.thumbnail_path)) && existsSync(docThumbAbs))) {
+        getDb()
+          .prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?")
+          .run(docThumbPath, docId);
+      }
+    }
+
     gcUnreferencedAttachments(docId);
     return newSnapshot;
   });
