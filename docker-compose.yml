@@ -1,0 +1,15 @@
+services:
+  app:
+    image: ghcr.io/junglesub/excalidraw-workspace:${TAG:-latest}
+    build: .
+    container_name: private-excalidraw
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      DATA_DIR: /data
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-change-me-please}"
+      PORT: "3000"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900;
+}
+
+.excalidraw-rect {
+  @apply border border-gray-200 rounded shadow-sm;
+}
