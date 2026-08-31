@@ -10,9 +10,12 @@ import {
   msSinceLastSnapshot,
   snapshotDueForAutoSave,
   resolveRecoveryConflict,
+  handleManualSave,
+  serializeForComparison,
 } from "@/lib/versions";
 import { emptyScene, jsonToScene, sceneToJson } from "@/lib/types";
 import type { ExcalidrawScene } from "@/lib/types";
+import { storeAttachment } from "@/lib/attachments";
 
 describe("Version History and Snapshots", () => {
   beforeEach(() => {
@@ -214,5 +217,163 @@ describe("Version History and Snapshots", () => {
     ).toThrow(/attachment/i);
     expect(listVersions(doc.id)).toHaveLength(0);
     expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual(serverScene.elements);
+  });
+
+  it("manual save with same latest snapshot does not create snapshot and returns alreadySaved", () => {
+    const user = createUser("alice", "pass123", "USER");
+    const scene = { ...emptyScene(), elements: [{ id: "1", type: "rectangle" }] };
+    const doc = createDocument(user.id, scene, "Doc");
+    const first = handleManualSave(doc.id, user.id, "USER", false, scene, null);
+    expect(first.alreadySaved).toBe(false);
+    expect(first.snapshotCreated).toBe(true);
+    expect(listVersions(doc.id)).toHaveLength(1);
+    const latestId = listVersions(doc.id)[0].id;
+    const updatedBefore = getDocumentRaw(doc.id)!.updated_at;
+    const second = handleManualSave(doc.id, user.id, "USER", false, scene, null);
+    expect(second.alreadySaved).toBe(true);
+    expect(second.snapshotCreated).toBe(false);
+    expect(listVersions(doc.id)).toHaveLength(1);
+    expect(listVersions(doc.id)[0].id).toBe(latestId);
+    expect(getDocumentRaw(doc.id)!.updated_at).toBe(updatedBefore);
+  });
+
+  it("manual save treats file insertion order and hydration dataURL as equal for alreadySaved", () => {
+    const user = createUser("alice", "pass123", "USER");
+    const base: ExcalidrawScene = {
+      ...emptyScene(),
+      elements: [
+        { id: "a", type: "image", fileId: "f-a", isDeleted: false },
+        { id: "b", type: "image", fileId: "f-b", isDeleted: false },
+      ],
+      files: {
+        "f-a": { id: "f-a", mimeType: "image/png", created: 1 },
+        "f-b": { id: "f-b", mimeType: "image/png", created: 2 },
+      },
+    };
+    // Same normalized content but different file order and with dataURL (hydration) should be considered equal
+    const reorderedWithDataURL: ExcalidrawScene = {
+      ...base,
+      files: {
+        "f-b": { id: "f-b", mimeType: "image/png", created: 2, dataURL: "data:image/png;base64,QQ==" },
+        "f-a": { id: "f-a", mimeType: "image/png", created: 1, dataURL: "data:image/png;base64,QQ==" },
+      },
+    };
+    expect(serializeForComparison(base)).toBe(serializeForComparison(reorderedWithDataURL));
+
+    // For handleManualSave, need actual attachments persisted, so create them
+    const doc = createDocument(user.id, base, "Doc");
+    // Ensure attachments exist for f-a and f-b (store dummy data)
+    const dummy = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]); // minimal PNG header
+    try {
+      storeAttachment(doc.id, "f-a", "image/png", dummy, "f-a");
+    } catch {}
+    try {
+      storeAttachment(doc.id, "f-b", "image/png", dummy, "f-b");
+    } catch {}
+    handleManualSave(doc.id, user.id, "USER", false, base, null);
+    expect(listVersions(doc.id)).toHaveLength(1);
+    // Reordered without dataURL but different file order should be considered equal for alreadySaved
+    const reordered: ExcalidrawScene = {
+      ...base,
+      files: {
+        "f-b": { id: "f-b", mimeType: "image/png", created: 2 },
+        "f-a": { id: "f-a", mimeType: "image/png", created: 1 },
+      },
+    };
+    expect(serializeForComparison(base)).toBe(serializeForComparison(reordered));
+    const second = handleManualSave(doc.id, user.id, "USER", false, reordered, null);
+    expect(second.alreadySaved).toBe(true);
+    expect(second.snapshotCreated).toBe(false);
+    expect(listVersions(doc.id)).toHaveLength(1);
+  });
+
+  it("manual save when saved but no snapshot creates one manual_save snapshot without document update", () => {
+    const user = createUser("alice", "pass123", "USER");
+    const scene = { ...emptyScene(), elements: [{ id: "1", type: "rectangle" }] };
+    const doc = createDocument(user.id, scene, "Doc");
+    expect(listVersions(doc.id)).toHaveLength(0);
+    const beforeUpdated = getDocumentRaw(doc.id)!.updated_at;
+    const result = handleManualSave(doc.id, user.id, "USER", false, scene, null);
+    expect(result.alreadySaved).toBe(false);
+    expect(result.snapshotCreated).toBe(true);
+    expect(result.snapshot?.origin).toBe("manual_save");
+    expect(listVersions(doc.id)).toHaveLength(1);
+    expect(listVersions(doc.id)[0].origin).toBe("manual_save");
+    // Document already saved, so updated_at should not change (no document update)
+    expect(getDocumentRaw(doc.id)!.updated_at).toBe(beforeUpdated);
+  });
+
+  it("manual save when saved but latest differs creates snapshot without document update", () => {
+    const user = createUser("alice", "pass123", "USER");
+    const sceneA = { ...emptyScene(), elements: [{ id: "a", type: "rectangle" }] };
+    const sceneB = { ...emptyScene(), elements: [{ id: "b", type: "ellipse" }] };
+    const doc = createDocument(user.id, sceneA, "Doc");
+    // Create initial snapshot with sceneA
+    handleManualSave(doc.id, user.id, "USER", false, sceneA, null);
+    expect(listVersions(doc.id)).toHaveLength(1);
+    // Simulate document updated to sceneB via auto-save or direct (without manual snapshot)
+    getDb()
+      .prepare("UPDATE documents SET scene = ?, updated_at = ? WHERE id = ?")
+      .run(sceneToJson(sceneB), new Date().toISOString(), doc.id);
+    expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual(sceneB.elements);
+    // Now latest snapshot is sceneA, current document is sceneB, incoming is sceneB (clean manual save)
+    const beforeUpdated = getDocumentRaw(doc.id)!.updated_at;
+    const result = handleManualSave(doc.id, user.id, "USER", false, sceneB, null);
+    expect(result.alreadySaved).toBe(false);
+    expect(result.snapshotCreated).toBe(true);
+    expect(listVersions(doc.id)).toHaveLength(2);
+    expect(listVersions(doc.id)[0].origin).toBe("manual_save");
+    // Document already equals incoming, so no update
+    expect(getDocumentRaw(doc.id)!.updated_at).toBe(beforeUpdated);
+    expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual(sceneB.elements);
+  });
+
+  it("dirty manual save creates snapshot and updates document", () => {
+    const user = createUser("alice", "pass123", "USER");
+    const sceneA = { ...emptyScene(), elements: [{ id: "a", type: "rectangle" }] };
+    const sceneB = { ...emptyScene(), elements: [{ id: "a", type: "rectangle" }, { id: "b", type: "ellipse" }] };
+    const doc = createDocument(user.id, sceneA, "Doc");
+    handleManualSave(doc.id, user.id, "USER", false, sceneA, null);
+    expect(listVersions(doc.id)).toHaveLength(1);
+    const beforeUpdated = getDocumentRaw(doc.id)!.updated_at;
+    // Dirty: incoming sceneB differs from current document sceneA
+    const result = handleManualSave(doc.id, user.id, "USER", false, sceneB, null);
+    expect(result.alreadySaved).toBe(false);
+    expect(result.snapshotCreated).toBe(true);
+    expect(listVersions(doc.id)).toHaveLength(2);
+    expect(listVersions(doc.id)[0].origin).toBe("manual_save");
+    expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual(sceneB.elements);
+    expect(getDocumentRaw(doc.id)!.updated_at).not.toBe(beforeUpdated);
+  });
+
+  it("manual save does not return alreadySaved when incoming matches latest but current differs - regression", () => {
+    const user = createUser("alice", "pass123", "USER");
+    const sceneA = { ...emptyScene(), elements: [{ id: "a", type: "rectangle" }] };
+    const sceneB = { ...emptyScene(), elements: [{ id: "b", type: "ellipse" }] };
+    const doc = createDocument(user.id, sceneA, "Doc");
+    // First manual save creates snapshot with sceneA (latest = sceneA, current = sceneA)
+    handleManualSave(doc.id, user.id, "USER", false, sceneA, null);
+    expect(listVersions(doc.id)).toHaveLength(1);
+    expect(serializeForComparison(jsonToScene(getDocumentRaw(doc.id)!.scene))).toBe(serializeForComparison(sceneA));
+    // Simulate current document diverging to sceneB without a new snapshot (latest still sceneA, current is sceneB)
+    getDb()
+      .prepare("UPDATE documents SET scene = ?, updated_at = ? WHERE id = ?")
+      .run(sceneToJson(sceneB), new Date().toISOString(), doc.id);
+    expect(serializeForComparison(jsonToScene(getDocumentRaw(doc.id)!.scene))).toBe(serializeForComparison(sceneB));
+    const latestBefore = jsonToScene((getDb().prepare("SELECT scene FROM document_versions WHERE document_id = ? ORDER BY version_number DESC LIMIT 1").get(doc.id) as { scene: string }).scene);
+    expect(serializeForComparison(latestBefore)).toBe(serializeForComparison(sceneA));
+    // Incoming matches old snapshot (sceneA) but current differs (sceneB) - must NOT be alreadySaved
+    const beforeCount = listVersions(doc.id).length;
+    const beforeUpdated = getDocumentRaw(doc.id)!.updated_at;
+    const result = handleManualSave(doc.id, user.id, "USER", false, sceneA, null);
+    expect(result.alreadySaved).toBe(false);
+    expect(result.snapshotCreated).toBe(true);
+    expect(listVersions(doc.id)).toHaveLength(beforeCount + 1);
+    // Document should be updated to incoming (sceneA) because incoming differs from current
+    expect(serializeForComparison(jsonToScene(getDocumentRaw(doc.id)!.scene))).toBe(serializeForComparison(sceneA));
+    expect(getDocumentRaw(doc.id)!.updated_at).not.toBe(beforeUpdated);
+    // Latest snapshot should now be sceneA as well
+    const latestAfter = jsonToScene((getDb().prepare("SELECT scene FROM document_versions WHERE document_id = ? ORDER BY version_number DESC LIMIT 1").get(doc.id) as { scene: string }).scene);
+    expect(serializeForComparison(latestAfter)).toBe(serializeForComparison(sceneA));
   });
 });

@@ -25,7 +25,7 @@ Step-by-step implementation and quality verification checklist based on the `imp
   - [x] `users`: id, username (unique), password_hash, role (`USER` | `ADMIN`), is_active, created_at, updated_at
   - [x] `documents`: id, title, owner_id (FK), scene (JSON), thumbnail_path, created_at, updated_at, deleted_at (soft delete)
   - [x] `document_members`: id, document_id (FK), user_id (FK), permission (`OWNER` | `EDITOR` | `VIEWER`), created_at, updated_at
-  - [x] `document_versions`: id, document_id (FK), version_number, scene (JSON), thumbnail_path, created_by (FK), created_at
+  - [x] `document_versions`: id, document_id (FK), version_number, scene (JSON), thumbnail_path, created_by (FK), created_at, origin (nullable `VersionOrigin`)
   - [x] `attachments`: id, document_id (FK), file_name, file_size, mime_type, file_path, sha256, created_at
   - [x] `share_links`: id, document_id (FK, unique), token (unique), permission (`VIEWER`), expires_at (nullable), is_active, created_at
   - [x] `sessions`: id, user_id (FK), token, expires_at, created_at
@@ -85,7 +85,7 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] **Saving Pipeline (Auto-save & Manual Save)**
   - [x] **Auto-save**: 3-second debounce on canvas edit, updates current scene in DB (`/api/documents/[id]/scene`)
   - [x] **Auto-snapshot Policy**: Auto-save creates a recovery snapshot only when >= 5 minutes have elapsed since the last snapshot
-  - [x] **Manual Save**: 'Save' button / `Ctrl+S` immediately persists scene and generates an instant version snapshot (`/api/documents/[id]/save`)
+  - [x] **Manual Save (snapshot-aware)**: 'Save' / `Ctrl+S` always reaches server; server compares normalized incoming scene with latest snapshot — if equal, no document update/snapshot and returns `Already saved`; otherwise creates exactly one `manual_save` snapshot (updating document only if incoming differs) and returns `Snapshot saved`; clean auto-save remains no-op
 - [x] **Version History**
   - [x] Retains up to the 20 most recent snapshots per document (`MAX_VERSIONS = 20`)
   - [x] Version history drawer (snapshot list, timestamps, authors, thumbnails)
@@ -162,7 +162,7 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] **Build & Lint Verification**
   - [x] TypeScript type checking (`tsc --noEmit`) passing with 0 errors
   - [x] Production build (`npm run build`) passing cleanly
-  - [x] Automated test suite (`npm test`) 100% passing (6 suites, 26 tests)
+  - [x] Automated test suite (`npm test`) 100% passing (12 suites, 124 tests)
 
 ---
 
@@ -185,4 +185,15 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] Recovery snapshots distinguish discarded `Client draft` (`recovery_client_draft`) from discarded `Server version` (`recovery_server_version`)
 - [x] Origin threaded through `insertSnapshot` / `createSnapshotFromScene` / `restoreVersion` / `resolveRecoveryConflict` and exposed via `listVersions` and `GET /api/documents/[id]/versions`
 - [x] History drawer renders origin badge after `Version N` using existing `bg-gray-100` style; not encoded in scene JSON or thumbnail path
-- [x] Focused TDD coverage: `tests/version_origin.test.ts` (legacy file migration with initializeSchema, each origin persistence, list/API exposure, badge markup) — full suite 117 tests, `npm run typecheck` clean
+- [x] Focused TDD coverage: `tests/version_origin.test.ts` (legacy file migration with initializeSchema, each origin persistence, list/API exposure, badge markup) — full suite 124 tests, `npm run typecheck` clean
+
+---
+
+## 13. Snapshot-Aware Manual Save (2026-08-31)
+
+- [x] Clean manual Save / `Ctrl+S` no longer silently returns; always reaches server
+- [x] Server normalizes incoming, current, and latest via shared `scene_normalize` helper (sorted files, `viewBackgroundColor`, active-image filtering, hydration `dataURL` ignored) and compares
+- [x] If incoming, current, and latest all equal (normalized): no `UPDATE documents`, no `INSERT document_versions`; returns `{ alreadySaved: true, snapshotCreated: false }` and client shows `Already saved`
+- [x] Otherwise: creates exactly one `manual_save` snapshot; updates `documents` only when incoming differs from current; returns `{ alreadySaved: false, snapshotCreated: true }` and client shows `Snapshot saved`; regression ensures incoming==latest but current differs does not falsely return `Already saved`
+- [x] Dirty manual save updates then snapshots; clean auto-save remains no-op with no request
+- [x] Preserved: authorization, `compactSceneFiles` validation, snapshot cap (20), `VersionOrigin` labels, thumbnails, recovery behavior; no DB column or deps added; duplicated comparison removed via shared helper; TDD covers 4 manual paths incl. regression + `getManualSaveStatus`

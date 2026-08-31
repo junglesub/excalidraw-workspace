@@ -16,6 +16,7 @@ import {
   summarizeRecoveryScene,
   resolveClientRecovery,
   sceneMatchesLastSaved,
+  getManualSaveStatus,
 } from "@/lib/client_save";
 import type { ExcalidrawScene, Permission } from "@/lib/types";
 import type { LocalDraftEnvelope } from "@/lib/client_save";
@@ -269,7 +270,7 @@ export default function EditorClient({
 
   const executeSave = useCallback(
     async (forceSnapshot: boolean) => {
-      if (!canEdit || !isDirtyRef.current) return;
+      if (!canEdit || (!isDirtyRef.current && !forceSnapshot)) return;
       if (isSavingRef.current) {
         queuedSaveRef.current = {
           forceSnapshot: forceSnapshot || queuedSaveRef.current?.forceSnapshot || false,
@@ -282,6 +283,7 @@ export default function EditorClient({
 
       try {
         let currentSnapshot = forceSnapshot;
+        let lastResult: Awaited<ReturnType<typeof saveDocumentScene>> | null = null;
         while (true) {
           const snapshotBeforeSave = sceneRef.current;
           const serializedBeforeSave = serializeSceneForComparison(snapshotBeforeSave);
@@ -293,6 +295,7 @@ export default function EditorClient({
             isManualSave: currentSnapshot,
             snapshotDue: currentSnapshot,
           });
+          lastResult = res;
 
           // Check if user edited scene during in-flight save
           const currentSerialized = serializeSceneForComparison(sceneRef.current);
@@ -310,8 +313,11 @@ export default function EditorClient({
             isDirtyRef.current = true;
           }
 
-          if (res.snapshotCreated || currentSnapshot) {
+          if (res.snapshotCreated) {
             lastSnapshotRef.current = Date.now();
+            await loadVersions();
+          } else if (currentSnapshot && res.alreadySaved) {
+            // No new snapshot, but manual save was acknowledged
             await loadVersions();
           }
 
@@ -324,7 +330,16 @@ export default function EditorClient({
           }
         }
 
-        setStatus(`Saved ${new Date().toLocaleTimeString()}`, "saved");
+        if (lastResult && forceSnapshot) {
+          const manualStatus = getManualSaveStatus(lastResult);
+          if (manualStatus === "Already saved" || manualStatus === "Snapshot saved") {
+            setStatus(manualStatus, "saved");
+          } else {
+            setStatus(`Saved ${new Date().toLocaleTimeString()}`, "saved");
+          }
+        } else {
+          setStatus(`Saved ${new Date().toLocaleTimeString()}`, "saved");
+        }
       } catch (err) {
         queuedSaveRef.current = null;
         setStatus(err instanceof Error ? err.message : "Save failed", "error");

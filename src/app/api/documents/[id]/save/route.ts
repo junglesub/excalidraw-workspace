@@ -1,7 +1,6 @@
 import { handleError, json, jsonError, readJson, requireUser, adminModeFrom } from "@/lib/http";
-import { updateScene } from "@/lib/documents";
 import { jsonToScene } from "@/lib/types";
-import { createSnapshotFromScene, listVersions } from "@/lib/versions";
+import { handleManualSave } from "@/lib/versions";
 import { decodePngDataURL } from "@/lib/thumbnails";
 
 export const dynamic = "force-dynamic";
@@ -25,11 +24,14 @@ export async function POST(req: Request, { params }: Ctx) {
     }
     const scene = jsonToScene(JSON.stringify(body.scene));
     const thumbBuf = decodePngDataURL(body.thumbnailBase64);
-    updateScene(id, scene, user.id, user.role, adminMode, { thumbnailBuffer: thumbBuf });
-
-    const snapshot = createSnapshotFromScene(id, scene, user.id, true, thumbBuf, { origin: "manual_save" });
-    const versions = listVersions(id);
-    return json({ ok: true, snapshot, versions });
+    const result = handleManualSave(id, user.id, user.role, adminMode, scene, thumbBuf);
+    return json({
+      ok: true,
+      alreadySaved: result.alreadySaved,
+      snapshotCreated: result.snapshotCreated,
+      snapshot: result.snapshot,
+      versions: result.versions,
+    });
   } catch (err) {
     return handleError(err);
   }

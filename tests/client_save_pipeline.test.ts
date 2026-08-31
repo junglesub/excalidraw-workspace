@@ -13,6 +13,7 @@ import {
   summarizeRecoveryScene,
   resolveClientRecovery,
   sceneMatchesLastSaved,
+  getManualSaveStatus,
 } from "@/lib/client_save";
 import { emptyScene } from "@/lib/types";
 import type { ExcalidrawScene } from "@/lib/types";
@@ -507,5 +508,12 @@ describe("Client Save Pipeline", () => {
   it("recognizes undo back to the last saved scene as clean", () => {
     const saved = { ...emptyScene(), elements: [{ id: "saved", type: "rectangle" }] };
     expect(sceneMatchesLastSaved(saved, serializeSceneForComparison(saved))).toBe(true);
+  });
+
+  it("decides client-visible manual save status from server result", () => {
+    expect(getManualSaveStatus({ ok: true, alreadySaved: true, snapshotCreated: false })).toBe("Already saved");
+    expect(getManualSaveStatus({ ok: true, alreadySaved: false, snapshotCreated: true })).toBe("Snapshot saved");
+    expect(getManualSaveStatus({ ok: true, snapshotCreated: false })).toBe("Saved");
+    expect(getManualSaveStatus({ ok: true, alreadySaved: false, snapshotCreated: false })).toBe("Saved");
   });
 });

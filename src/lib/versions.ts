@@ -8,6 +8,7 @@ import { compactSceneFiles, gcUnreferencedAttachments } from "./attachments";
 import type { DocumentVersionRow, ExcalidrawScene, VersionOrigin } from "./types";
 import { emptyScene, jsonToScene, sceneToJson } from "./types";
 import { HttpError } from "./http";
+import { serializeForComparison } from "./scene_normalize";
 
 export type { VersionOrigin };
 
@@ -158,6 +159,68 @@ export function msSinceLastSnapshot(docId: string): number {
 /** Returns true when an auto-save snapshot is due (>= 5 minutes since last). */
 export function snapshotDueForAutoSave(docId: string, intervalMs: number): boolean {
   return msSinceLastSnapshot(docId) >= intervalMs;
+}
+
+export { serializeForComparison };
+
+export function handleManualSave(
+  docId: string,
+  actorId: string,
+  role: "USER" | "ADMIN",
+  adminMode: boolean,
+  scene: ExcalidrawScene,
+  thumbnailBuffer: Buffer | null,
+): { alreadySaved: boolean; snapshotCreated: boolean; snapshot?: DocumentVersionRow; versions: Omit<DocumentVersionRow, "scene">[] } {
+  requireWrite(docId, actorId, role, adminMode);
+  return transaction(() => {
+    const current = getDocumentRaw(docId);
+    if (!current) throw new HttpError(404, "Document not found");
+
+    // Validate incoming scene's attachments (throws 400 if missing)
+    const compactIncoming = compactSceneFiles(docId, scene, { allowInlineDataUrl: false });
+
+    const currentScene = jsonToScene(current.scene);
+    const latestRow = getDb()
+      .prepare("SELECT scene FROM document_versions WHERE document_id = ? ORDER BY version_number DESC LIMIT 1")
+      .get(docId) as { scene: string } | undefined;
+    const latestScene = latestRow ? jsonToScene(latestRow.scene) : null;
+
+    const incomingSerialized = serializeForComparison(compactIncoming);
+    const latestSerialized = latestScene ? serializeForComparison(latestScene) : null;
+    const currentSerialized = serializeForComparison(currentScene);
+
+    if (
+      latestSerialized !== null &&
+      incomingSerialized === latestSerialized &&
+      incomingSerialized === currentSerialized
+    ) {
+      return { alreadySaved: true, snapshotCreated: false, versions: listVersions(docId) };
+    }
+
+    // Need to create snapshot. Update document only if incoming differs from current.
+    let snapshot: DocumentVersionRow | undefined;
+    if (incomingSerialized !== currentSerialized) {
+      const thumbPath = thumbnailBuffer ? saveThumbnailFromBuffer(docId, thumbnailBuffer).relativePath : null;
+      // If no thumbnail buffer, try to generate placeholder if needed (mirrors updateScene logic)
+      let finalThumbPath: string | null = thumbPath;
+      if (!finalThumbPath && !current.thumbnail_path) {
+        try {
+          finalThumbPath = saveThumbnail(docId, compactIncoming).relativePath;
+        } catch {
+          // ignore
+        }
+      }
+      getDb()
+        .prepare("UPDATE documents SET scene = ?, thumbnail_path = COALESCE(?, thumbnail_path), updated_at = ? WHERE id = ?")
+        .run(sceneToJson(compactIncoming), finalThumbPath, nowIso(), docId);
+      gcUnreferencedAttachments(docId);
+    }
+
+    // Create exactly one manual_save snapshot (even if document was already saved)
+    snapshot = insertSnapshot(docId, compactIncoming, actorId, true, thumbnailBuffer, { origin: "manual_save" });
+
+    return { alreadySaved: false, snapshotCreated: true, snapshot, versions: listVersions(docId) };
+  });
 }
 
 export interface ResolveRecoveryConflictInput {

@@ -21,6 +21,7 @@ Scene JSON no longer carries image Base64. Files are stored under `data/attachme
 | Export `.excalidraw` | Server hydrates Base64 into a portable file |
 | Dashboard thumbnail | Client `exportToBlob` PNG on manual save / snapshot. Document path is always `thumbnails/<docId>.png` |
 | Version history | Badge after `Version N`: Manual save / Auto snapshot / Restore / Client draft / Server version / Legacy / unknown (nullable `document_versions.origin`) |
+| Manual save | Snapshot-aware `POST /save`: server compares normalized incoming, current document, and latest snapshot — if all three equal, no update/snapshot and returns `Already saved`; otherwise creates exactly one `manual_save` snapshot (updating document only if incoming differs) and returns `Snapshot saved`; clean auto-save remains no-op; shared `scene_normalize` helper removes duplicated comparison |
 
 Do not pass compact files (missing `dataURL`) into Excalidraw `initialData`. `addFiles()` will not replace an existing file id, and `img.src = undefined` becomes `/documents/undefined`.
 
@@ -100,7 +101,7 @@ The approved replacement behavior is specified in [Local Draft Recovery Conflict
 | Restored drafts not explicitly dirty/queued | Selecting client draft replaces server scene atomically via `resolveRecoveryConflict` and mounts selected scene immediately | `tests/versions.test.ts`, `tests/recovery.test.ts` |
 | Invalid and legacy drafts remain indefinitely | `decideDraftAtLoad` returns `malformed` without deleting raw value; warning shown, server scene mounted | `tests/client_save_pipeline.test.ts` |
 
-Verification: `npm test` (117 tests) and `npm run typecheck` pass. Browser manual scenarios outstanding (see CHECKLIST).
+Verification: `npm test` (124 tests) and `npm run typecheck` pass. Browser manual scenarios outstanding (see CHECKLIST).
 
 ---
 
@@ -120,4 +121,17 @@ Verification: `npm test` (117 tests) and `npm run typecheck` pass. Browser manua
 
 Origin is stored as a column, not inside scene JSON or thumbnail path, and exposed via `listVersions` / `GET /api/documents/[id]/versions`. History drawer renders badge after `Version N` using existing `bg-gray-100` style.
 
-Validation: `tests/version_origin.test.ts` covers backward compatibility (including actual legacy file migration), each origin persistence, list/API exposure, and badge markup; full suite 117 tests and `npm run typecheck` pass.
+Validation: `tests/version_origin.test.ts` covers backward compatibility (including actual legacy file migration), each origin persistence, list/API exposure, and badge markup; full suite 124 tests and `npm run typecheck` pass.
+
+---
+
+## 7. Snapshot-aware manual Save (2026-08-31)
+
+**Behavior:** Clean manual Save / Ctrl+S always reaches server. Server normalizes incoming, current, and latest snapshot via shared `scene_normalize` helper (sorted files, `viewBackgroundColor`, active-image filtering, hydration `dataURL` ignored).
+- If incoming, current, and latest all equal (normalized): no `UPDATE documents`, no `INSERT document_versions`; returns `{ alreadySaved: true, snapshotCreated: false }` and client shows `Already saved`.
+- Otherwise: creates exactly one `manual_save` snapshot; updates `documents.scene` only when incoming differs from current; returns `{ alreadySaved: false, snapshotCreated: true }` and client shows `Snapshot saved`; regression ensures incoming matching old snapshot while current differs does not falsely return `Already saved`.
+- Dirty manual save updates then snapshots; clean auto-save remains no-op with no request.
+
+**Preserved:** Authorization, `compactSceneFiles` attachment validation, snapshot cap (20), `VersionOrigin` labels, thumbnails, recovery behavior. No DB column or dependencies added. Duplicated comparison removed via shared `scene_normalize` helper.
+
+**Validation:** `tests/versions.test.ts` (4 manual paths incl. regression for incoming==latest but current differs + file-order/dataURL equality), `tests/client_save_pipeline.test.ts` (`getManualSaveStatus`); full suite 124 tests, `npm run typecheck` clean.

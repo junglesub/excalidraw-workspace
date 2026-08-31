@@ -1,5 +1,10 @@
 import type { ExcalidrawScene } from "./types";
 import { blobToDataURL } from "./client_attachments";
+import {
+  getActiveImageFileIds as sharedGetActiveImageFileIds,
+  buildCompactScene as sharedBuildCompactScene,
+  serializeForComparison as sharedSerializeForComparison,
+} from "./scene_normalize";
 
 export interface SaveDocumentOptions {
   docId: string;
@@ -14,9 +19,16 @@ export interface SaveDocumentOptions {
 export interface SaveDocumentResult {
   ok: boolean;
   snapshotCreated?: boolean;
+  alreadySaved?: boolean;
   updatedAt?: string;
   versions?: unknown[];
   snapshot?: unknown;
+}
+
+export function getManualSaveStatus(result: SaveDocumentResult): string {
+  if (result.alreadySaved) return "Already saved";
+  if (result.snapshotCreated) return "Snapshot saved";
+  return "Saved";
 }
 
 function compactFileMetadata(fileId: string, fileObj: Record<string, unknown>): Record<string, unknown> {
@@ -28,21 +40,8 @@ function compactFileMetadata(fileId: string, fileObj: Record<string, unknown>): 
   };
 }
 
-/**
- * Deterministically serializes scene content for dirty state comparison.
- * Inline dataURLs are ignored so client hydration does not look like an edit.
- */
 export function serializeSceneForComparison(s: ExcalidrawScene): string {
-  const compact = buildCompactClientScene(s);
-  const sortedFiles = Object.fromEntries(
-    Object.entries(compact.files || {}).sort(([left], [right]) => left.localeCompare(right)),
-  );
-  return JSON.stringify({
-    elements: Array.isArray(compact.elements) ? compact.elements : [],
-    files: sortedFiles,
-    viewBackgroundColor:
-      (compact.appState as Record<string, unknown> | undefined)?.viewBackgroundColor || "#ffffff",
-  });
+  return sharedSerializeForComparison(s);
 }
 
 export interface LocalDraftEnvelope {
@@ -157,43 +156,12 @@ export function evaluateInFlightSaveState(
   return { isDirty: true, canClearDraft: false };
 }
 
-/**
- * Returns the set of fileIds referenced by active, non-deleted image elements in the scene.
- */
 export function getActiveImageFileIds(scene: ExcalidrawScene): Set<string> {
-  const activeIds = new Set<string>();
-  if (Array.isArray(scene.elements)) {
-    for (const el of scene.elements) {
-      if (el && typeof el === "object") {
-        const item = el as Record<string, unknown>;
-        if (item.type === "image" && !item.isDeleted && typeof item.fileId === "string" && item.fileId) {
-          activeIds.add(item.fileId);
-        }
-      }
-    }
-  }
-  return activeIds;
+  return sharedGetActiveImageFileIds(scene);
 }
 
-/**
- * Builds a compact client-side scene with all file.dataURL properties removed,
- * preserving only metadata (id, mimeType, created, version, etc.) for active image elements.
- */
 export function buildCompactClientScene(scene: ExcalidrawScene): ExcalidrawScene {
-  const activeFileIds = getActiveImageFileIds(scene);
-  const compactFiles: Record<string, Record<string, unknown>> = {};
-  if (scene.files && typeof scene.files === "object") {
-    for (const [fileId, fileObj] of Object.entries(scene.files as Record<string, Record<string, unknown>>)) {
-      if (!fileObj || typeof fileObj !== "object") continue;
-      if (!activeFileIds.has(fileId)) continue;
-
-      compactFiles[fileId] = compactFileMetadata(fileId, fileObj);
-    }
-  }
-  return {
-    ...scene,
-    files: compactFiles,
-  };
+  return sharedBuildCompactScene(scene);
 }
 
 /**
