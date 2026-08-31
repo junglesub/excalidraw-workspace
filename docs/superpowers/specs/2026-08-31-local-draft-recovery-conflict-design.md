@@ -102,8 +102,8 @@ Display for each version:
 
 Controls:
 
-- `Use client draft`
-- `Use server version`
+- Selectable cards for `Client draft` and `Server version` (`aria-pressed` on native buttons, Enter/Space activation, selected `border-blue-600`/`bg-blue-50`/`ring`/`✓` and hover `border-gray-300`/`bg-gray-50`, no initial selection)
+- Single `Confirm selection` button disabled until a card is selected or while busy; confirms the selected choice exactly once
 - Checked by default: `Preserve the version not selected as a recovery snapshot`
 
 No canvas thumbnail or scene preview is included.

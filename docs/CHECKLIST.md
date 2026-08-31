@@ -162,7 +162,7 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] **Build & Lint Verification**
   - [x] TypeScript type checking (`tsc --noEmit`) passing with 0 errors
   - [x] Production build (`npm run build`) passing cleanly
-  - [x] Automated test suite (`npm test`) 100% passing (12 suites, 124 tests)
+  - [x] Automated test suite (`npm test`) 100% passing (12 suites, 126 tests)
 
 ---
 
@@ -185,7 +185,7 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] Recovery snapshots distinguish discarded `Client draft` (`recovery_client_draft`) from discarded `Server version` (`recovery_server_version`)
 - [x] Origin threaded through `insertSnapshot` / `createSnapshotFromScene` / `restoreVersion` / `resolveRecoveryConflict` and exposed via `listVersions` and `GET /api/documents/[id]/versions`
 - [x] History drawer renders origin badge after `Version N` using existing `bg-gray-100` style; not encoded in scene JSON or thumbnail path
-- [x] Focused TDD coverage: `tests/version_origin.test.ts` (legacy file migration with initializeSchema, each origin persistence, list/API exposure, badge markup) — full suite 124 tests, `npm run typecheck` clean
+- [x] Focused TDD coverage: `tests/version_origin.test.ts` (legacy file migration with initializeSchema, each origin persistence, list/API exposure, badge markup) — full suite 126 tests, `npm run typecheck` clean
 
 ---
 
@@ -197,3 +197,14 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] Otherwise: creates exactly one `manual_save` snapshot; updates `documents` only when incoming differs from current; returns `{ alreadySaved: false, snapshotCreated: true }` and client shows `Snapshot saved`; regression ensures incoming==latest but current differs does not falsely return `Already saved`
 - [x] Dirty manual save updates then snapshots; clean auto-save remains no-op with no request
 - [x] Preserved: authorization, `compactSceneFiles` validation, snapshot cap (20), `VersionOrigin` labels, thumbnails, recovery behavior; no DB column or deps added; duplicated comparison removed via shared helper; TDD covers 4 manual paths incl. regression + `getManualSaveStatus`
+
+---
+
+## 14. Selectable Recovery Cards (2026-08-31)
+
+- [x] Removed immediate `Use client draft` / `Use server version` buttons; Client draft and Server version rendered as accessible selectable cards (native buttons with `aria-pressed`, Enter/Space)
+- [x] Initial selection none; clicking card selects it with visual hover plus selected `border-blue-600`/`bg-blue-50`/`ring`/`✓` and semantic `aria-pressed="true"`; summaries retained on cards
+- [x] Preservation checkbox and retryable `role="alert"` error unchanged
+- [x] Single bottom `Confirm selection` button disabled until selection exists or while `busy`; clicking it calls `onChoose` exactly with selected choice; busy prevents selection/confirmation changes
+- [x] Maintained no Escape/backdrop close and editor load gate; no external deps or server change
+- [x] Focused TDD: `tests/recovery_modal.test.ts` (4 tests) observes real modal markup and pure guard — no initial selection (`aria-pressed="false"`) with disabled `Confirm selection` and summaries, hover visual, busy disables, error `role="alert"`, and `canConfirmSelection`/`confirmRecoveryChoice` proves selected choice invokes `onChoose` once (selected `aria-pressed="true"`/`border-blue-600`/`bg-blue-50`/`✓` is implemented in component, not directly rendered in this small suite); full suite 126 tests, `npm run typecheck` clean

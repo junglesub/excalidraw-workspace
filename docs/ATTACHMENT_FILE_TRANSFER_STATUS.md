@@ -101,7 +101,7 @@ The approved replacement behavior is specified in [Local Draft Recovery Conflict
 | Restored drafts not explicitly dirty/queued | Selecting client draft replaces server scene atomically via `resolveRecoveryConflict` and mounts selected scene immediately | `tests/versions.test.ts`, `tests/recovery.test.ts` |
 | Invalid and legacy drafts remain indefinitely | `decideDraftAtLoad` returns `malformed` without deleting raw value; warning shown, server scene mounted | `tests/client_save_pipeline.test.ts` |
 
-Verification: `npm test` (124 tests) and `npm run typecheck` pass. Browser manual scenarios outstanding (see CHECKLIST).
+Verification: `npm test` (126 tests) and `npm run typecheck` pass. Browser manual scenarios outstanding (see CHECKLIST).
 
 ---
 
@@ -121,7 +121,7 @@ Verification: `npm test` (124 tests) and `npm run typecheck` pass. Browser manua
 
 Origin is stored as a column, not inside scene JSON or thumbnail path, and exposed via `listVersions` / `GET /api/documents/[id]/versions`. History drawer renders badge after `Version N` using existing `bg-gray-100` style.
 
-Validation: `tests/version_origin.test.ts` covers backward compatibility (including actual legacy file migration), each origin persistence, list/API exposure, and badge markup; full suite 124 tests and `npm run typecheck` pass.
+Validation: `tests/version_origin.test.ts` covers backward compatibility (including actual legacy file migration), each origin persistence, list/API exposure, and badge markup; full suite 126 tests and `npm run typecheck` pass.
 
 ---
 
@@ -134,4 +134,12 @@ Validation: `tests/version_origin.test.ts` covers backward compatibility (includ
 
 **Preserved:** Authorization, `compactSceneFiles` attachment validation, snapshot cap (20), `VersionOrigin` labels, thumbnails, recovery behavior. No DB column or dependencies added. Duplicated comparison removed via shared `scene_normalize` helper.
 
-**Validation:** `tests/versions.test.ts` (4 manual paths incl. regression for incoming==latest but current differs + file-order/dataURL equality), `tests/client_save_pipeline.test.ts` (`getManualSaveStatus`); full suite 124 tests, `npm run typecheck` clean.
+**Validation:** `tests/versions.test.ts` (4 manual paths incl. regression for incoming==latest but current differs + file-order/dataURL equality), `tests/client_save_pipeline.test.ts` (`getManualSaveStatus`); full suite 126 tests, `npm run typecheck` clean.
+
+---
+
+## 8. Selectable recovery cards (2026-08-31)
+
+**Behavior:** `RecoveryConflictModal` renders Client draft and Server version as accessible selectable cards (native buttons with `aria-pressed`, Enter/Space activation). Initial selection none; clicking a card selects it with visual hover plus selected `border-blue-600`/`bg-blue-50`/`ring`/`✓` and semantic `aria-pressed="true"`. Single bottom button `Confirm selection` is disabled until a selection exists or while `busy`; clicking it calls `onChoose` exactly with the selected choice via `confirmRecoveryChoice` guard. Busy disables cards and confirm and prevents changes; preservation checkbox and retryable `role="alert"` error remain; no Escape/backdrop close.
+
+**Validation:** `tests/recovery_modal.test.ts` (4 tests) observes real modal markup and pure guard: no initial selection with `aria-pressed="false"` and disabled `Confirm selection`, summaries, hover visual, busy disabled, error `role="alert"`, and `canConfirmSelection`/`confirmRecoveryChoice` proves selected choice invokes `onChoose` once (selected `aria-pressed="true"`/`border-blue-600`/`bg-blue-50`/`✓` is implemented in component, not directly rendered in this small suite); full suite 126 tests, `npm run typecheck` clean.
