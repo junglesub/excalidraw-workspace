@@ -34,13 +34,112 @@ function compactFileMetadata(fileId: string, fileObj: Record<string, unknown>): 
  */
 export function serializeSceneForComparison(s: ExcalidrawScene): string {
   const compact = buildCompactClientScene(s);
+  const sortedFiles = Object.fromEntries(
+    Object.entries(compact.files || {}).sort(([left], [right]) => left.localeCompare(right)),
+  );
   return JSON.stringify({
     elements: Array.isArray(compact.elements) ? compact.elements : [],
-    files: compact.files || {},
+    files: sortedFiles,
     viewBackgroundColor:
       (compact.appState as Record<string, unknown> | undefined)?.viewBackgroundColor || "#ffffff",
   });
 }
+
+export interface LocalDraftEnvelope {
+  scene: ExcalidrawScene;
+  updatedAt: number;
+}
+
+export interface RecoverySceneSummary {
+  updatedAt: number | string;
+  elementCount: number;
+  imageCount: number;
+}
+
+export type DraftLoadDecision =
+  | { kind: "server" }
+  | { kind: "equal" }
+  | { kind: "conflict"; draft: LocalDraftEnvelope }
+  | { kind: "malformed" };
+
+export function localDraftStorageKey(userId: string, docId: string): string {
+  return `excalidraw_draft_${userId}_${docId}`;
+}
+
+export function decideDraftAtLoad(
+  raw: string | null,
+  serverScene: ExcalidrawScene,
+): DraftLoadDecision {
+  if (raw === null) return { kind: "server" };
+  try {
+    const parsed = JSON.parse(raw) as Partial<LocalDraftEnvelope>;
+    if (
+      !parsed.scene ||
+      typeof parsed.scene !== "object" ||
+      !Array.isArray(parsed.scene.elements) ||
+      typeof parsed.updatedAt !== "number" ||
+      !Number.isFinite(parsed.updatedAt)
+    ) {
+      return { kind: "malformed" };
+    }
+    const draft = parsed as LocalDraftEnvelope;
+    return serializeSceneForComparison(draft.scene) === serializeSceneForComparison(serverScene)
+      ? { kind: "equal" }
+      : { kind: "conflict", draft };
+  } catch {
+    return { kind: "malformed" };
+  }
+}
+
+export function decideDraftForAccess(
+  canEdit: boolean,
+  readDraft: () => string | null,
+  serverScene: ExcalidrawScene,
+): DraftLoadDecision {
+  return canEdit ? decideDraftAtLoad(readDraft(), serverScene) : { kind: "server" };
+}
+
+export function summarizeRecoveryScene(
+  scene: ExcalidrawScene,
+  updatedAt: number | string,
+): RecoverySceneSummary {
+  return {
+    updatedAt,
+    elementCount: Array.isArray(scene.elements) ? scene.elements.length : 0,
+    imageCount: getActiveImageFileIds(scene).size,
+  };
+}
+
+export function sceneMatchesLastSaved(
+  scene: ExcalidrawScene,
+  lastSavedSerialized: string,
+): boolean {
+  return serializeSceneForComparison(scene) === lastSavedSerialized;
+}
+
+export interface ResolveClientRecoveryOptions {
+  docId: string;
+  choice: "client" | "server";
+  preserveDiscarded: boolean;
+  expectedServerUpdatedAt: string;
+  draft: LocalDraftEnvelope;
+  persistedFileIds: Set<string>;
+  fetchFn?: typeof fetch;
+}
+
+export type ResolveClientRecoveryResult =
+  | {
+      ok: true;
+      choice: "client" | "server";
+      snapshotCreated: boolean;
+      updatedAt: string;
+    }
+  | {
+      ok: false;
+      code: "SERVER_VERSION_CHANGED";
+      serverScene: ExcalidrawScene;
+      serverUpdatedAt: string;
+    };
 
 /**
  * Compares the scene that was just saved against the latest scene in memory.
@@ -260,4 +359,44 @@ export async function saveDocumentScene(options: SaveDocumentOptions): Promise<S
   }
 
   return (await res.json()) as SaveDocumentResult;
+}
+
+export async function resolveClientRecovery(
+  options: ResolveClientRecoveryOptions,
+): Promise<ResolveClientRecoveryResult> {
+  const fetchImpl =
+    options.fetchFn || (typeof window !== "undefined" ? window.fetch.bind(window) : globalThis.fetch);
+  const mustKeepClient = options.choice === "client" || options.preserveDiscarded;
+  if (mustKeepClient) {
+    await uploadNewAttachments(options.docId, options.draft.scene, options.persistedFileIds, {
+      fetchFn: fetchImpl,
+    });
+  }
+  const compactScene = buildCompactClientScene(options.draft.scene);
+  const clientThumbnailBase64 =
+    options.choice === "server" && options.preserveDiscarded
+      ? await generateThumbnailDataURL(options.draft.scene)
+      : null;
+  const base = typeof window !== "undefined" && window.location ? window.location.origin : "http://localhost";
+  const path = `/api/documents/${encodeURIComponent(options.docId)}/recovery`;
+  const url = new URL(path, base);
+  const response = await fetchImpl(url.toString(), {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      choice: options.choice,
+      preserveDiscarded: options.preserveDiscarded,
+      expectedServerUpdatedAt: options.expectedServerUpdatedAt,
+      clientScene: compactScene,
+      clientUpdatedAt: options.draft.updatedAt,
+      ...(clientThumbnailBase64 ? { clientThumbnailBase64 } : {}),
+    }),
+  });
+  const data = (await response.json()) as ResolveClientRecoveryResult & { error?: string };
+  if (response.status === 409 && !data.ok && data.code === "SERVER_VERSION_CHANGED") {
+    return data;
+  }
+  if (!response.ok) throw new Error(data.error || `Recovery failed with HTTP ${response.status}`);
+  return data;
 }

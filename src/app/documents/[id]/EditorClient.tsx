@@ -4,14 +4,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import ExcalidrawCanvas from "@/components/ExcalidrawCanvas";
+import RecoveryConflictModal from "@/components/RecoveryConflictModal";
 import { api } from "@/lib/client";
 import {
   saveDocumentScene,
   sceneForLocalDraft,
   serializeSceneForComparison,
   buildCompactClientScene,
+  decideDraftForAccess,
+  localDraftStorageKey,
+  summarizeRecoveryScene,
+  resolveClientRecovery,
+  sceneMatchesLastSaved,
 } from "@/lib/client_save";
 import type { ExcalidrawScene, Permission } from "@/lib/types";
+import type { LocalDraftEnvelope } from "@/lib/client_save";
 
 interface User {
   id: string;
@@ -53,6 +60,12 @@ interface Props {
   deleted: boolean;
 }
 
+interface DraftConflictState {
+  draft: LocalDraftEnvelope;
+  serverScene: ExcalidrawScene;
+  serverUpdatedAt: string;
+}
+
 const AUTO_SAVE_MS = 3000;
 const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -91,6 +104,13 @@ export default function EditorClient({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSnapshotRef = useRef<number>(Date.now());
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const draftKey = localDraftStorageKey(user.id, docId);
+  const [recoveryReady, setRecoveryReady] = useState(!canEdit);
+  const [draftConflict, setDraftConflict] = useState<DraftConflictState | null>(null);
+  const [preserveDiscarded, setPreserveDiscarded] = useState(true);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
 
   const [versions, setVersions] = useState<VersionRow[]>([]);
   const [showVersions, setShowVersions] = useState(false);
@@ -146,39 +166,80 @@ export default function EditorClient({
     if (isOwner) loadShare();
   }, [loadVersions, loadShare, isOwner]);
 
-  // Load unsaved local draft only if strictly newer than cloud/server initialUpdatedAt
   useEffect(() => {
-    try {
-      const localDraft = localStorage.getItem(`excalidraw_draft_${docId}`);
-      if (localDraft) {
-        const parsed = JSON.parse(localDraft);
-        const draftScene = parsed?.scene || parsed;
-        const draftTimestamp = typeof parsed?.updatedAt === "number" ? parsed.updatedAt : 0;
-        const serverTimestamp = initialUpdatedAt ? new Date(initialUpdatedAt).getTime() : 0;
-
-        // If server is newer or equal, cloud wins and stale local draft is cleared
-        if (serverTimestamp && draftTimestamp && serverTimestamp >= draftTimestamp) {
-          localStorage.removeItem(`excalidraw_draft_${docId}`);
-        } else if (draftScene && Array.isArray(draftScene.elements) && draftScene.elements.length > 0) {
-          // If local draft is strictly newer than server timestamp (unsaved work from network drop/crash)
-          if (!serverTimestamp || draftTimestamp > serverTimestamp) {
-            const restored = sceneForLocalDraft(draftScene, persistedFileIdsRef.current);
-            // Hydration-only drafts (same compact scene, leftover dataURLs) are not real edits.
-            if (serializeSceneForComparison(restored) === serializeSceneForComparison(initialScene)) {
-              localStorage.removeItem(`excalidraw_draft_${docId}`);
-              return;
-            }
-            sceneRef.current = restored;
-            setInitialCanvasScene(restored);
-            setCanvasKey((k) => k + 1);
-            setStatus("Restored unsaved local draft", "saved");
-          }
-        }
-      }
-    } catch {
-      // ignore
+    const decision = decideDraftForAccess(
+      canEdit,
+      () => localStorage.getItem(draftKey),
+      initialScene,
+    );
+    if (!canEdit) {
+      setRecoveryReady(true);
+      return;
     }
-  }, [docId, initialScene, initialUpdatedAt, setStatus]);
+    if (decision.kind === "equal") {
+      localStorage.removeItem(draftKey);
+      setRecoveryReady(true);
+    } else if (decision.kind === "conflict") {
+      setDraftConflict({
+        draft: decision.draft,
+        serverScene: initialScene,
+        serverUpdatedAt: initialUpdatedAt || "",
+      });
+    } else {
+      if (decision.kind === "malformed") {
+        setStatus("Local recovery draft could not be read; server version opened and draft retained.", "error");
+      }
+      setRecoveryReady(true);
+    }
+  }, [canEdit, draftKey, initialScene, initialUpdatedAt, setStatus]);
+
+  const resolveDraftChoice = useCallback(
+    async (choice: "client" | "server") => {
+      if (!draftConflict || recoveryBusy) return;
+      setRecoveryBusy(true);
+      setRecoveryError(null);
+      try {
+        const result = await resolveClientRecovery({
+          docId,
+          choice,
+          preserveDiscarded,
+          expectedServerUpdatedAt: draftConflict.serverUpdatedAt,
+          draft: draftConflict.draft,
+          persistedFileIds: persistedFileIdsRef.current,
+        });
+        if (!result.ok) {
+          setDraftConflict((current) =>
+            current
+              ? {
+                  ...current,
+                  serverScene: result.serverScene,
+                  serverUpdatedAt: result.serverUpdatedAt,
+                }
+              : current,
+          );
+          setRecoveryError("The server version changed. Compare the latest server version and choose again.");
+          return;
+        }
+
+        const selected = choice === "client" ? draftConflict.draft.scene : draftConflict.serverScene;
+        localStorage.removeItem(draftKey);
+        sceneRef.current = selected;
+        lastSavedContentRef.current = serializeSceneForComparison(selected);
+        isDirtyRef.current = false;
+        setInitialCanvasScene(selected);
+        setCanvasKey((key) => key + 1);
+        setDraftConflict(null);
+        setRecoveryReady(true);
+        if (result.snapshotCreated) await loadVersions();
+        setStatus(choice === "client" ? "Client draft restored" : "Server version selected", "saved");
+      } catch (error) {
+        setRecoveryError(error instanceof Error ? error.message : "Recovery failed");
+      } finally {
+        setRecoveryBusy(false);
+      }
+    },
+    [draftConflict, recoveryBusy, docId, draftKey, preserveDiscarded, loadVersions, setStatus],
+  );
 
   // Cleanup timers on unmount
   useEffect(() => {
@@ -221,7 +282,7 @@ export default function EditorClient({
             lastSavedContentRef.current = serializedBeforeSave;
             isDirtyRef.current = false;
             try {
-              localStorage.removeItem(`excalidraw_draft_${docId}`);
+              localStorage.removeItem(draftKey);
             } catch {
               // ignore
             }
@@ -253,7 +314,7 @@ export default function EditorClient({
         isSavingRef.current = false;
       }
     },
-    [canEdit, docId, loadVersions, setStatus],
+    [canEdit, docId, draftKey, loadVersions, setStatus],
   );
 
   const saveNow = useCallback(
@@ -271,10 +332,17 @@ export default function EditorClient({
       // so thumbnail exportToBlob can rasterize images.
       sceneRef.current = s;
 
-      const currentSerialized = serializeSceneForComparison(s);
-      // Only proceed if content actually differs from last saved state
-      if (currentSerialized === lastSavedContentRef.current) {
+      if (sceneMatchesLastSaved(s, lastSavedContentRef.current)) {
         isDirtyRef.current = false;
+        if (debounceRef.current) {
+          clearTimeout(debounceRef.current);
+          debounceRef.current = null;
+        }
+        try {
+          localStorage.removeItem(draftKey);
+        } catch {
+          // Browser storage may be unavailable; the scene is still clean in memory.
+        }
         return;
       }
 
@@ -284,14 +352,14 @@ export default function EditorClient({
       // Persisted images stay compact so reload uses /api/attachments instead of draft base64.
       try {
         localStorage.setItem(
-          `excalidraw_draft_${docId}`,
+          draftKey,
           JSON.stringify({
             scene: sceneForLocalDraft(s, persistedFileIdsRef.current),
             updatedAt: Date.now(),
           }),
         );
       } catch {
-        // ignore
+        setStatus("Local recovery draft could not be saved; keep this tab open until server save completes.", "error");
       }
 
       // 2. Debounce auto-save to server
@@ -301,7 +369,7 @@ export default function EditorClient({
         void saveNow(due);
       }, AUTO_SAVE_MS);
     },
-    [canEdit, docId, saveNow],
+    [canEdit, draftKey, saveNow, setStatus],
   );
 
   const manualSave = useCallback(async () => {
@@ -638,15 +706,32 @@ export default function EditorClient({
 
       {/* Main Excalidraw Canvas */}
       <main className="flex-1 relative min-h-0">
-        <ExcalidrawCanvas
-          key={`canvas-${docId}-${canvasKey}`}
-          docId={docId}
-          initialScene={initialCanvasScene}
-          readOnly={!canEdit}
-          onSceneChange={handleChange}
-          theme={theme}
-        />
+        {recoveryReady && !draftConflict ? (
+          <ExcalidrawCanvas
+            key={`canvas-${docId}-${canvasKey}`}
+            docId={docId}
+            initialScene={initialCanvasScene}
+            readOnly={!canEdit}
+            onSceneChange={handleChange}
+            theme={theme}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-sm text-gray-500">
+            Checking for unsaved changes…
+          </div>
+        )}
       </main>
+      {draftConflict && (
+        <RecoveryConflictModal
+          client={summarizeRecoveryScene(draftConflict.draft.scene, draftConflict.draft.updatedAt)}
+          server={summarizeRecoveryScene(draftConflict.serverScene, draftConflict.serverUpdatedAt)}
+          preserveDiscarded={preserveDiscarded}
+          busy={recoveryBusy}
+          error={recoveryError}
+          onPreserveChange={setPreserveDiscarded}
+          onChoose={(choice) => void resolveDraftChoice(choice)}
+        />
+      )}
 
       {/* Version History Modal / Drawer */}
       {showVersions && (

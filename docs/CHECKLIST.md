@@ -163,3 +163,13 @@ Step-by-step implementation and quality verification checklist based on the `imp
   - [x] TypeScript type checking (`tsc --noEmit`) passing with 0 errors
   - [x] Production build (`npm run build`) passing cleanly
   - [x] Automated test suite (`npm test`) 100% passing (6 suites, 26 tests)
+
+---
+
+## 11. Local Draft Recovery Conflict (2026-08-31)
+
+- [x] Load-time local/server mismatch requires an explicit writable-user choice.
+- [x] The unselected version is snapshotted by default for both client and server choices.
+- [x] VIEWER always sees server state without local draft access or deletion.
+- [x] Empty-scene recovery, edit-to-undo cleanup, account isolation, and image recovery are covered.
+- [ ] Browser manual verification (refresh with both choices, default checkbox/unchecked, retry after failure, image recovery without `/documents/undefined`, VIEWER isolation, account switching, malformed draft) — automated tests pass; manual browser scenarios not yet executed in this environment.

@@ -7,7 +7,14 @@ import {
   getActiveImageFileIds,
   serializeSceneForComparison,
   sceneForLocalDraft,
+  decideDraftForAccess,
+  decideDraftAtLoad,
+  localDraftStorageKey,
+  summarizeRecoveryScene,
+  resolveClientRecovery,
+  sceneMatchesLastSaved,
 } from "@/lib/client_save";
+import { emptyScene } from "@/lib/types";
 import type { ExcalidrawScene } from "@/lib/types";
 
 describe("Client Save Pipeline", () => {
@@ -313,5 +320,192 @@ describe("Client Save Pipeline", () => {
     const draft = sceneForLocalDraft(scene, new Set(["persisted_1"]));
     expect((draft.files.persisted_1 as { dataURL?: string }).dataURL).toBeUndefined();
     expect((draft.files.new_1 as { dataURL?: string }).dataURL).toBe(dataURL);
+  });
+
+  it("uses user- and document-scoped local draft keys", () => {
+    expect(localDraftStorageKey("user-a", "doc-1")).toBe("excalidraw_draft_user-a_doc-1");
+    expect(localDraftStorageKey("user-a", "doc-1")).not.toBe(
+      localDraftStorageKey("user-b", "doc-1"),
+    );
+  });
+
+  it("does not read draft storage without write access", () => {
+    const readDraft = vi.fn(() => JSON.stringify({ scene: emptyScene(), updatedAt: 1 }));
+    expect(decideDraftForAccess(false, readDraft, emptyScene())).toEqual({ kind: "server" });
+    expect(readDraft).not.toHaveBeenCalled();
+  });
+
+  it("detects any normalized mismatch regardless of timestamps and accepts an empty draft", () => {
+    const server = { ...emptyScene(), elements: [{ id: "server", type: "rectangle" }] };
+    const emptyDraft = JSON.stringify({ scene: emptyScene(), updatedAt: 1 });
+
+    const decision = decideDraftAtLoad(emptyDraft, server);
+    expect(decision.kind).toBe("conflict");
+  });
+
+  it("treats hydration-only dataURL differences and file insertion order as equal", () => {
+    const server: ExcalidrawScene = {
+      ...emptyScene(),
+      elements: [
+        { id: "a", type: "image", fileId: "f-a", isDeleted: false },
+        { id: "b", type: "image", fileId: "f-b", isDeleted: false },
+      ],
+      files: {
+        "f-a": { id: "f-a", mimeType: "image/png", created: 1 },
+        "f-b": { id: "f-b", mimeType: "image/png", created: 2 },
+      },
+    };
+    const draft = {
+      ...server,
+      files: {
+        "f-b": { id: "f-b", mimeType: "image/png", created: 2, dataURL: "data:image/png;base64,QQ==" },
+        "f-a": { id: "f-a", mimeType: "image/png", created: 1, dataURL: "data:image/png;base64,QQ==" },
+      },
+    };
+
+    expect(decideDraftAtLoad(JSON.stringify({ scene: draft, updatedAt: 999 }), server)).toEqual({
+      kind: "equal",
+    });
+  });
+
+  it("preserves malformed and legacy values as non-recoverable decisions", () => {
+    expect(decideDraftAtLoad("{broken", emptyScene())).toEqual({ kind: "malformed" });
+    expect(decideDraftAtLoad(JSON.stringify(emptyScene()), emptyScene())).toEqual({ kind: "malformed" });
+  });
+
+  it("summarizes total elements and active images for the conflict dialog", () => {
+    const scene: ExcalidrawScene = {
+      ...emptyScene(),
+      elements: [
+        { id: "rect", type: "rectangle" },
+        { id: "live", type: "image", fileId: "live-file", isDeleted: false },
+        { id: "deleted", type: "image", fileId: "deleted-file", isDeleted: true },
+      ],
+    };
+    expect(summarizeRecoveryScene(scene, 123)).toEqual({
+      updatedAt: 123,
+      elementCount: 3,
+      imageCount: 1,
+    });
+  });
+
+  it("uploads a new draft image before asking the server to snapshot the client draft", async () => {
+    const calls: string[] = [];
+    const dataURL = "data:image/png;base64,QQ==";
+    const scene: ExcalidrawScene = {
+      ...emptyScene(),
+      elements: [{ id: "image", type: "image", fileId: "new-file", isDeleted: false }],
+      files: { "new-file": { id: "new-file", mimeType: "image/png", dataURL, created: 1 } },
+    };
+    const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
+      calls.push(String(url));
+      if (String(url).includes("/attachments")) {
+        return new Response(JSON.stringify({ ok: true }), { status: 201 });
+      }
+      return new Response(
+        JSON.stringify({ ok: true, choice: "server", snapshotCreated: true, updatedAt: "server-time" }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    await resolveClientRecovery({
+      docId: "doc-1",
+      choice: "server",
+      preserveDiscarded: true,
+      expectedServerUpdatedAt: "initial-time",
+      draft: { scene, updatedAt: 123 },
+      persistedFileIds: new Set(),
+      fetchFn,
+    });
+
+    expect(calls[0]).toContain("/attachments");
+    expect(calls[1]).toContain("/recovery");
+  });
+
+  it("does not upload discarded files when choosing server without preservation", async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ ok: true, choice: "server", snapshotCreated: false, updatedAt: "server-time" }),
+        { status: 200 },
+      ),
+    ) as unknown as typeof fetch;
+    await resolveClientRecovery({
+      docId: "doc-1",
+      choice: "server",
+      preserveDiscarded: false,
+      expectedServerUpdatedAt: "initial-time",
+      draft: {
+        scene: {
+          ...emptyScene(),
+          elements: [{ id: "image", type: "image", fileId: "new-file", isDeleted: false }],
+          files: {
+            "new-file": {
+              id: "new-file",
+              mimeType: "image/png",
+              dataURL: "data:image/png;base64,QQ==",
+              created: 1,
+            },
+          },
+        },
+        updatedAt: 123,
+      },
+      persistedFileIds: new Set(),
+      fetchFn,
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(String((fetchFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0])).toContain("/recovery");
+  });
+
+  it("returns a structured optimistic conflict instead of deleting client state", async () => {
+    const latest = { ...emptyScene(), elements: [{ id: "latest", type: "diamond" }] };
+    const fetchFn = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          ok: false,
+          code: "SERVER_VERSION_CHANGED",
+          serverScene: latest,
+          serverUpdatedAt: "latest-time",
+        }),
+        { status: 409 },
+      ),
+    ) as unknown as typeof fetch;
+    await expect(
+      resolveClientRecovery({
+        docId: "doc-1",
+        choice: "client",
+        preserveDiscarded: false,
+        expectedServerUpdatedAt: "initial-time",
+        draft: { scene: emptyScene(), updatedAt: 123 },
+        persistedFileIds: new Set(),
+        fetchFn,
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      code: "SERVER_VERSION_CHANGED",
+      serverScene: latest,
+      serverUpdatedAt: "latest-time",
+    });
+  });
+
+  it("throws the server error when recovery fails", async () => {
+    const fetchFn = vi.fn(async () =>
+      new Response(JSON.stringify({ error: "snapshot failed" }), { status: 500 }),
+    ) as unknown as typeof fetch;
+    await expect(
+      resolveClientRecovery({
+        docId: "doc-1",
+        choice: "server",
+        preserveDiscarded: false,
+        expectedServerUpdatedAt: "initial-time",
+        draft: { scene: emptyScene(), updatedAt: 123 },
+        persistedFileIds: new Set(),
+        fetchFn,
+      }),
+    ).rejects.toThrow("snapshot failed");
+  });
+
+  it("recognizes undo back to the last saved scene as clean", () => {
+    const saved = { ...emptyScene(), elements: [{ id: "saved", type: "rectangle" }] };
+    expect(sceneMatchesLastSaved(saved, serializeSceneForComparison(saved))).toBe(true);
   });
 });

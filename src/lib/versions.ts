@@ -157,6 +157,75 @@ export function snapshotDueForAutoSave(docId: string, intervalMs: number): boole
   return msSinceLastSnapshot(docId) >= intervalMs;
 }
 
+export interface ResolveRecoveryConflictInput {
+  choice: "client" | "server";
+  preserveDiscarded: boolean;
+  expectedServerUpdatedAt: string;
+  clientScene: ExcalidrawScene;
+  thumbnailBuffer?: Buffer | null;
+}
+
+export type ResolveRecoveryConflictResult =
+  | {
+      ok: true;
+      choice: "client" | "server";
+      snapshotCreated: boolean;
+      updatedAt: string;
+    }
+  | {
+      ok: false;
+      code: "SERVER_VERSION_CHANGED";
+      serverScene: ExcalidrawScene;
+      serverUpdatedAt: string;
+    };
+
+export function resolveRecoveryConflict(
+  docId: string,
+  actorId: string,
+  role: "USER" | "ADMIN",
+  adminMode: boolean,
+  input: ResolveRecoveryConflictInput,
+): ResolveRecoveryConflictResult {
+  requireWrite(docId, actorId, role, adminMode);
+  return transaction(() => {
+    const current = getDocumentRaw(docId);
+    if (!current) throw new HttpError(404, "Document not found");
+    const serverScene = jsonToScene(current.scene);
+    if (current.updated_at !== input.expectedServerUpdatedAt) {
+      return {
+        ok: false,
+        code: "SERVER_VERSION_CHANGED",
+        serverScene,
+        serverUpdatedAt: current.updated_at,
+      };
+    }
+
+    const mustKeepClient = input.choice === "client" || input.preserveDiscarded;
+    const compactClient = mustKeepClient ? compactSceneFiles(docId, input.clientScene) : null;
+    let snapshotCreated = false;
+    let updatedAt = current.updated_at;
+
+    if (input.choice === "client") {
+      updatedAt = new Date(
+        Math.max(Date.now(), new Date(current.updated_at).getTime() + 1),
+      ).toISOString();
+      getDb()
+        .prepare("UPDATE documents SET scene = ?, updated_at = ? WHERE id = ?")
+        .run(sceneToJson(compactClient!), updatedAt, docId);
+      if (input.preserveDiscarded) {
+        insertSnapshot(docId, serverScene, actorId, true);
+        snapshotCreated = true;
+      }
+    } else if (input.preserveDiscarded) {
+      insertSnapshot(docId, compactClient!, actorId, true, input.thumbnailBuffer);
+      snapshotCreated = true;
+    }
+
+    gcUnreferencedAttachments(docId);
+    return { ok: true, choice: input.choice, snapshotCreated, updatedAt };
+  });
+}
+
 /**
  * Restore a document to a past version. The restore is committed as a new
  * current state (a fresh snapshot of the restored scene is recorded).
