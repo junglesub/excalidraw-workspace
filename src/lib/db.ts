@@ -126,7 +126,8 @@ CREATE TABLE IF NOT EXISTS document_versions (
   scene          TEXT NOT NULL,
   thumbnail_path TEXT,
   created_by     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  created_at     TEXT NOT NULL
+  created_at     TEXT NOT NULL,
+  origin         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_versions_doc ON document_versions(document_id, version_number);
 
@@ -157,6 +158,15 @@ CREATE INDEX IF NOT EXISTS idx_share_links_token ON share_links(token);
 
 export function initializeSchema(database: DatabaseSync): void {
   database.exec(SCHEMA_SQL);
+  try {
+    const cols = database.prepare("PRAGMA table_info(document_versions)").all() as { name: string }[];
+    const hasOrigin = cols.some((c) => c.name === "origin");
+    if (!hasOrigin) {
+      database.exec("ALTER TABLE document_versions ADD COLUMN origin TEXT");
+    }
+  } catch (err) {
+    console.error("Failed to migrate document_versions origin column:", err);
+  }
   try {
     const info = database.prepare("PRAGMA table_info(attachments)").all() as { name: string; pk: number }[];
     const docIdCol = info.find((c) => c.name === "document_id");

@@ -20,6 +20,7 @@ Scene JSON no longer carries image Base64. Files are stored under `data/attachme
 | Unload | `beforeunload` keepalive PUT of a compact scene |
 | Export `.excalidraw` | Server hydrates Base64 into a portable file |
 | Dashboard thumbnail | Client `exportToBlob` PNG on manual save / snapshot. Document path is always `thumbnails/<docId>.png` |
+| Version history | Badge after `Version N`: Manual save / Auto snapshot / Restore / Client draft / Server version / Legacy / unknown (nullable `document_versions.origin`) |
 
 Do not pass compact files (missing `dataURL`) into Excalidraw `initialData`. `addFiles()` will not replace an existing file id, and `img.src = undefined` becomes `/documents/undefined`.
 
@@ -99,4 +100,24 @@ The approved replacement behavior is specified in [Local Draft Recovery Conflict
 | Restored drafts not explicitly dirty/queued | Selecting client draft replaces server scene atomically via `resolveRecoveryConflict` and mounts selected scene immediately | `tests/versions.test.ts`, `tests/recovery.test.ts` |
 | Invalid and legacy drafts remain indefinitely | `decideDraftAtLoad` returns `malformed` without deleting raw value; warning shown, server scene mounted | `tests/client_save_pipeline.test.ts` |
 
-Verification: `npm test` (107 tests) and `npm run typecheck` pass. Browser manual scenarios outstanding (see CHECKLIST).
+Verification: `npm test` (117 tests) and `npm run typecheck` pass. Browser manual scenarios outstanding (see CHECKLIST).
+
+---
+
+## 6. Version origin labels (2026-08-31)
+
+**Schema:** `document_versions.origin` nullable TEXT added via idempotent `ALTER TABLE ... ADD COLUMN` in `initializeSchema`. Existing rows remain `NULL` and display `Legacy / unknown`.
+
+**Origins:**
+| Origin | Source | Badge |
+|---|---|---|
+| `manual_save` | `POST /api/documents/[id]/save` | Manual save |
+| `auto_snapshot` | `PUT /api/documents/[id]/scene` with throttled snapshot | Auto snapshot |
+| `restore` | `POST /api/documents/[id]/versions?action=restore` | Restore |
+| `recovery_client_draft` | Recovery `choice: server` preserve discarded client draft | Client draft |
+| `recovery_server_version` | Recovery `choice: client` preserve discarded server version | Server version |
+| `null` | Legacy rows | Legacy / unknown |
+
+Origin is stored as a column, not inside scene JSON or thumbnail path, and exposed via `listVersions` / `GET /api/documents/[id]/versions`. History drawer renders badge after `Version N` using existing `bg-gray-100` style.
+
+Validation: `tests/version_origin.test.ts` covers backward compatibility (including actual legacy file migration), each origin persistence, list/API exposure, and badge markup; full suite 117 tests and `npm run typecheck` pass.

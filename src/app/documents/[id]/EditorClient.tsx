@@ -34,6 +34,7 @@ interface VersionRow {
   created_by: string;
   created_by_username?: string;
   created_at: string;
+  origin: string | null;
 }
 
 interface MemberRow {
@@ -64,6 +65,23 @@ interface DraftConflictState {
   draft: LocalDraftEnvelope;
   serverScene: ExcalidrawScene;
   serverUpdatedAt: string;
+}
+
+export function originBadgeLabel(origin: string | null | undefined): string {
+  switch (origin) {
+    case "manual_save":
+      return "Manual save";
+    case "auto_snapshot":
+      return "Auto snapshot";
+    case "restore":
+      return "Restore";
+    case "recovery_client_draft":
+      return "Client draft";
+    case "recovery_server_version":
+      return "Server version";
+    default:
+      return "Legacy / unknown";
+  }
 }
 
 const AUTO_SAVE_MS = 3000;
@@ -761,8 +779,11 @@ export default function EditorClient({
                     className="border rounded-lg p-3 hover:border-blue-300 transition bg-white flex flex-col gap-2"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="font-medium text-sm text-gray-900">
+                      <span className="font-medium text-sm text-gray-900 flex items-center gap-2">
                         Version {v.version_number}
+                        <span className="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border font-normal">
+                          {originBadgeLabel(v.origin)}
+                        </span>
                       </span>
                       <span className="text-xs text-gray-500">
                         {new Date(v.created_at).toLocaleString()}

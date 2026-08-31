@@ -32,7 +32,7 @@ export async function PUT(req: Request, { params }: Ctx) {
     let snapshotCreated = false;
     const wantSnapshot = body.snapshot === true;
     if (wantSnapshot && snapshotDueForAutoSave(id, AUTO_INTERVAL)) {
-      createSnapshotFromScene(id, scene, user.id, true, thumbBuf);
+      createSnapshotFromScene(id, scene, user.id, true, thumbBuf, { origin: "auto_snapshot" });
       snapshotCreated = true;
     }
     return json({ ok: true, snapshotCreated, updatedAt: getDocumentRaw(id)!.updated_at });

@@ -62,6 +62,13 @@ export interface DocumentMemberRow {
   updated_at: string;
 }
 
+export type VersionOrigin =
+  | "manual_save"
+  | "auto_snapshot"
+  | "restore"
+  | "recovery_client_draft"
+  | "recovery_server_version";
+
 export interface DocumentVersionRow {
   id: string;
   document_id: string;
@@ -70,6 +77,7 @@ export interface DocumentVersionRow {
   thumbnail_path: string | null;
   created_by: string; // user id
   created_at: string;
+  origin: VersionOrigin | null;
 }
 
 export interface AttachmentRow {

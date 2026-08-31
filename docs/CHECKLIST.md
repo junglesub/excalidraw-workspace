@@ -173,3 +173,16 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] VIEWER always sees server state without local draft access or deletion.
 - [x] Empty-scene recovery, edit-to-undo cleanup, account isolation, and image recovery are covered.
 - [ ] Browser manual verification (refresh with both choices, default checkbox/unchecked, retry after failure, image recovery without `/documents/undefined`, VIEWER isolation, account switching, malformed draft) — automated tests pass; manual browser scenarios not yet executed in this environment.
+
+---
+
+## 12. Version Origin Labels (2026-08-31)
+
+- [x] Nullable `origin` column added via idempotent startup migration (`ALTER TABLE document_versions ADD COLUMN origin TEXT`); existing rows remain `NULL`
+- [x] Legacy/null origin displays neutral `Legacy / unknown` badge
+- [x] `VersionOrigin` type (`manual_save`, `auto_snapshot`, `restore`, `recovery_client_draft`, `recovery_server_version`) persisted per snapshot path
+- [x] Manual save (`POST /save` → `manual_save`), auto snapshot (`PUT /scene` throttled → `auto_snapshot`), restore (`POST /versions?action=restore` → `restore`) record origins
+- [x] Recovery snapshots distinguish discarded `Client draft` (`recovery_client_draft`) from discarded `Server version` (`recovery_server_version`)
+- [x] Origin threaded through `insertSnapshot` / `createSnapshotFromScene` / `restoreVersion` / `resolveRecoveryConflict` and exposed via `listVersions` and `GET /api/documents/[id]/versions`
+- [x] History drawer renders origin badge after `Version N` using existing `bg-gray-100` style; not encoded in scene JSON or thumbnail path
+- [x] Focused TDD coverage: `tests/version_origin.test.ts` (legacy file migration with initializeSchema, each origin persistence, list/API exposure, badge markup) — full suite 117 tests, `npm run typecheck` clean

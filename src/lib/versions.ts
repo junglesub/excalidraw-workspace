@@ -5,9 +5,11 @@ import { getDb, transaction } from "./db";
 import { getDocumentRaw, MAX_VERSIONS, AUTO_SNAPSHOT_INTERVAL_MS, requireWrite } from "./documents";
 import { saveThumbnail, saveThumbnailFromBuffer, removeThumbnail } from "./thumbnails";
 import { compactSceneFiles, gcUnreferencedAttachments } from "./attachments";
-import type { DocumentVersionRow, ExcalidrawScene } from "./types";
+import type { DocumentVersionRow, ExcalidrawScene, VersionOrigin } from "./types";
 import { emptyScene, jsonToScene, sceneToJson } from "./types";
 import { HttpError } from "./http";
+
+export type { VersionOrigin };
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -24,7 +26,7 @@ function insertSnapshot(
   createdBy: string,
   makeThumbnail: boolean,
   thumbnailBuffer?: Buffer | null,
-  options?: { allowInlineDataUrl?: boolean },
+  options?: { allowInlineDataUrl?: boolean; origin?: VersionOrigin | null },
 ): DocumentVersionRow {
   const db = getDb();
   const maxRow = db
@@ -34,6 +36,7 @@ function insertSnapshot(
   const id = crypto.randomUUID();
   const created = nowIso();
   const compactScene = compactSceneFiles(docId, scene, { allowInlineDataUrl: options?.allowInlineDataUrl ?? false });
+  const origin = options?.origin ?? null;
 
   let thumbnailPath: string | null = null;
   if (makeThumbnail) {
@@ -64,9 +67,9 @@ function insertSnapshot(
   }
 
   db.prepare(
-    `INSERT INTO document_versions (id, document_id, version_number, scene, thumbnail_path, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, docId, versionNumber, sceneToJson(compactScene), thumbnailPath, createdBy, created);
+    `INSERT INTO document_versions (id, document_id, version_number, scene, thumbnail_path, created_by, created_at, origin)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, docId, versionNumber, sceneToJson(compactScene), thumbnailPath, createdBy, created, origin);
 
   // Trim to the newest MAX_VERSIONS and GC physical thumbnail files.
   const trimmed = db
@@ -107,7 +110,7 @@ export function createSnapshotFromDoc(
   createdBy: string,
   makeThumbnail = true,
   thumbnailBuffer?: Buffer | null,
-  options?: { allowInlineDataUrl?: boolean },
+  options?: { allowInlineDataUrl?: boolean; origin?: VersionOrigin | null },
 ): DocumentVersionRow {
   const doc = getDocumentRaw(docId);
   if (!doc) throw new HttpError(404, "Document not found");
@@ -120,7 +123,7 @@ export function createSnapshotFromScene(
   createdBy: string,
   makeThumbnail = true,
   thumbnailBuffer?: Buffer | null,
-  options?: { allowInlineDataUrl?: boolean },
+  options?: { allowInlineDataUrl?: boolean; origin?: VersionOrigin | null },
 ): DocumentVersionRow {
   return insertSnapshot(docId, scene, createdBy, makeThumbnail, thumbnailBuffer, options);
 }
@@ -134,7 +137,7 @@ export function getVersion(id: string): DocumentVersionRow | undefined {
 export function listVersions(docId: string): Omit<DocumentVersionRow, "scene">[] {
   const rows = getDb()
     .prepare(
-      `SELECT v.id, v.document_id, v.version_number, v.thumbnail_path, v.created_by, v.created_at,
+      `SELECT v.id, v.document_id, v.version_number, v.thumbnail_path, v.created_by, v.created_at, v.origin,
               u.username AS created_by_username
        FROM document_versions v JOIN users u ON u.id = v.created_by
        WHERE v.document_id = ? ORDER BY v.version_number DESC`,
@@ -213,11 +216,13 @@ export function resolveRecoveryConflict(
         .prepare("UPDATE documents SET scene = ?, updated_at = ? WHERE id = ?")
         .run(sceneToJson(compactClient!), updatedAt, docId);
       if (input.preserveDiscarded) {
-        insertSnapshot(docId, serverScene, actorId, true);
+        insertSnapshot(docId, serverScene, actorId, true, null, { origin: "recovery_server_version" });
         snapshotCreated = true;
       }
     } else if (input.preserveDiscarded) {
-      insertSnapshot(docId, compactClient!, actorId, true, input.thumbnailBuffer);
+      insertSnapshot(docId, compactClient!, actorId, true, input.thumbnailBuffer, {
+        origin: "recovery_client_draft",
+      });
       snapshotCreated = true;
     }
 
@@ -263,7 +268,7 @@ export function restoreVersion(
     }
 
     // Commit the restore as a new current state snapshot using the version's thumbnail if available
-    const newSnapshot = insertSnapshot(docId, scene, actorId, true, versionThumbBuf);
+    const newSnapshot = insertSnapshot(docId, scene, actorId, true, versionThumbBuf, { origin: "restore" });
 
     // If version had a real thumbnail, also update document-level thumbnail
     if (versionThumbBuf) {

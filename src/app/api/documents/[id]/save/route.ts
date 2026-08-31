@@ -27,7 +27,7 @@ export async function POST(req: Request, { params }: Ctx) {
     const thumbBuf = decodePngDataURL(body.thumbnailBase64);
     updateScene(id, scene, user.id, user.role, adminMode, { thumbnailBuffer: thumbBuf });
 
-    const snapshot = createSnapshotFromScene(id, scene, user.id, true, thumbBuf);
+    const snapshot = createSnapshotFromScene(id, scene, user.id, true, thumbBuf, { origin: "manual_save" });
     const versions = listVersions(id);
     return json({ ok: true, snapshot, versions });
   } catch (err) {
