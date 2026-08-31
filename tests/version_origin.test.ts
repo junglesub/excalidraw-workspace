@@ -9,7 +9,7 @@ import {
   restoreVersion,
   resolveRecoveryConflict,
 } from "@/lib/versions";
-import { emptyScene, jsonToScene } from "@/lib/types";
+import { emptyScene, jsonToScene, sceneToJson } from "@/lib/types";
 import { GET as getVersionsRoute } from "@/app/api/documents/[id]/versions/route";
 import { POST as postManualSave } from "@/app/api/documents/[id]/save/route";
 import { PUT as putAutoSave } from "@/app/api/documents/[id]/scene/route";
@@ -165,16 +165,24 @@ describe("Version origin labels", () => {
     expect(listVersions(doc.id)[0].origin).toBe("manual_save");
 
     // Simulate auto_snapshot via direct call (API route also covered below)
-    createSnapshotFromScene(doc.id, { ...emptyScene(), elements: [{ id: "auto", type: "rect" }] }, user.id, false, null, {
+    const autoScene = { ...emptyScene(), elements: [{ id: "auto", type: "rect" }] };
+    createSnapshotFromScene(doc.id, autoScene, user.id, false, null, {
       origin: "auto_snapshot",
     });
     const afterAuto = listVersions(doc.id);
     expect(afterAuto[0].origin).toBe("auto_snapshot");
+    // Make auto the current document state before restore
+    getDb().prepare("UPDATE documents SET scene = ?, updated_at = ? WHERE id = ?").run(sceneToJson(autoScene), new Date().toISOString(), doc.id);
 
-    const snap = afterAuto[1]; // manual_save snapshot
+    const snap = afterAuto[1]; // manual_save snapshot (empty)
     restoreVersion(doc.id, snap.id, user.id, "USER", false);
     const afterRestore = listVersions(doc.id);
     expect(afterRestore[0].origin).toBe("restore");
+    // New snapshot should be of pre-restore auto, not the restored empty
+    const restoredCurrent = jsonToScene(getDocumentRaw(doc.id)!.scene);
+    expect(restoredCurrent.elements).toEqual([]);
+    const snapAfter = getDb().prepare("SELECT scene FROM document_versions WHERE id = ?").get(afterRestore[0].id) as { scene: string };
+    expect(jsonToScene(snapAfter.scene).elements[0] && (jsonToScene(snapAfter.scene).elements[0] as any).id).toBe("auto");
   });
 
   it("persists recovery origins for each direction", () => {

@@ -114,7 +114,7 @@ Verification: `npm test` (126 tests) and `npm run typecheck` pass. Browser manua
 |---|---|---|
 | `manual_save` | `POST /api/documents/[id]/save` | Manual save |
 | `auto_snapshot` | `PUT /api/documents/[id]/scene` with throttled snapshot | Auto snapshot |
-| `restore` | `POST /api/documents/[id]/versions?action=restore` | Restore |
+| `restore` | `POST /api/documents/[id]/versions?action=restore` snapshots pre-restore current state | Restore |
 | `recovery_client_draft` | Recovery `choice: server` preserve discarded client draft | Client draft |
 | `recovery_server_version` | Recovery `choice: client` preserve discarded server version | Server version |
 | `null` | Legacy rows | Legacy / unknown |
@@ -143,3 +143,11 @@ Validation: `tests/version_origin.test.ts` covers backward compatibility (includ
 **Behavior:** `RecoveryConflictModal` renders Client draft and Server version as accessible selectable cards (native buttons with `aria-pressed`, Enter/Space activation). Initial selection none; clicking a card selects it with visual hover plus selected `border-blue-600`/`bg-blue-50`/`ring`/`✓` and semantic `aria-pressed="true"`. Single bottom button `Confirm selection` is disabled until a selection exists or while `busy`; clicking it calls `onChoose` exactly with the selected choice via `confirmRecoveryChoice` guard. Busy disables cards and confirm and prevents changes; preservation checkbox and retryable `role="alert"` error remain; no Escape/backdrop close.
 
 **Validation:** `tests/recovery_modal.test.ts` (4 tests) observes real modal markup and pure guard: no initial selection with `aria-pressed="false"` and disabled `Confirm selection`, summaries, hover visual, busy disabled, error `role="alert"`, and `canConfirmSelection`/`confirmRecoveryChoice` proves selected choice invokes `onChoose` once (selected `aria-pressed="true"`/`border-blue-600`/`bg-blue-50`/`✓` is implemented in component, not directly rendered in this small suite); full suite 126 tests, `npm run typecheck` clean.
+
+---
+
+## 9. Restore pre-state snapshot (2026-08-31)
+
+**Behavior:** `restoreVersion` captures current `documents.scene` and its thumbnail before replacement, snapshots that pre-restore state with `origin="restore"`, then applies the selected version's scene as current and updates `documents.thumbnail_path` from the restored version's thumbnail. No new snapshot of the restored target is created (it already exists). Preserves write authorization, `compactSceneFiles` validation, atomic `transaction` rollback, snapshot cap/GC, and thumbnail safety.
+
+**Validation:** `tests/versions.test.ts` and `tests/version_origin.test.ts` prove `v2` current → restore `v1` yields new snapshot of `v2` (not `v1`), document current `v1`, origin `restore`; full suite 126 tests, `npm run typecheck` clean.

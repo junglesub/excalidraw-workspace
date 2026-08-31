@@ -79,6 +79,10 @@ describe("Version History and Snapshots", () => {
 
     const v2Scene = { ...emptyScene(), elements: [{ id: "v2-ellipse", type: "ellipse" }] };
     createSnapshotFromScene(doc.id, v2Scene, user.id, false);
+    // Make v2 the current document state before restore
+    getDb()
+      .prepare("UPDATE documents SET scene = ?, updated_at = ? WHERE id = ?")
+      .run(sceneToJson(v2Scene), new Date().toISOString(), doc.id);
 
     // Restore back to v1
     restoreVersion(doc.id, snap1.id, user.id, "USER", false);
@@ -89,10 +93,13 @@ describe("Version History and Snapshots", () => {
     expect(restoredScene.elements).toHaveLength(1);
     expect((restoredScene.elements[0] as any).id).toBe("v1-rect");
 
-    // A new version snapshot (v3) should have been recorded for the restore
+    // A new version snapshot (v3) should be of pre-restore v2, not v1, with origin restore
     const versions = listVersions(doc.id);
     expect(versions).toHaveLength(3);
     expect(versions[0].version_number).toBe(3);
+    expect(versions[0].origin).toBe("restore");
+    const snapV3 = getDb().prepare("SELECT scene FROM document_versions WHERE id = ?").get(versions[0].id) as { scene: string };
+    expect(jsonToScene(snapV3.scene).elements[0] && (jsonToScene(snapV3.scene).elements[0] as any).id).toBe("v2-ellipse");
   });
 
   it("snapshots the server scene before selecting the client scene", () => {

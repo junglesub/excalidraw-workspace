@@ -89,7 +89,7 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] **Version History**
   - [x] Retains up to the 20 most recent snapshots per document (`MAX_VERSIONS = 20`)
   - [x] Version history drawer (snapshot list, timestamps, authors, thumbnails)
-  - [x] Snapshot preview and rollback/restore (restoring commits as a new current state snapshot)
+  - [x] Snapshot preview and rollback/restore (restore snapshots pre-restore current state with `restore` origin, then applies selected version as current)
 - [x] **Thumbnail Generation & Caching**
   - [x] Live client canvas rasterization to PNG thumbnail on manual save and snapshot creation (`/data/thumbnails/<doc-id>.png`)
   - [x] Dashboard serves cached thumbnail images without client scene re-rendering (`/api/thumbnails/[...path]`)
@@ -181,7 +181,7 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] Nullable `origin` column added via idempotent startup migration (`ALTER TABLE document_versions ADD COLUMN origin TEXT`); existing rows remain `NULL`
 - [x] Legacy/null origin displays neutral `Legacy / unknown` badge
 - [x] `VersionOrigin` type (`manual_save`, `auto_snapshot`, `restore`, `recovery_client_draft`, `recovery_server_version`) persisted per snapshot path
-- [x] Manual save (`POST /save` → `manual_save`), auto snapshot (`PUT /scene` throttled → `auto_snapshot`), restore (`POST /versions?action=restore` → `restore`) record origins
+- [x] Manual save (`POST /save` → `manual_save`), auto snapshot (`PUT /scene` throttled → `auto_snapshot`), restore (`POST /versions?action=restore` snapshots pre-restore current → `restore`) record origins
 - [x] Recovery snapshots distinguish discarded `Client draft` (`recovery_client_draft`) from discarded `Server version` (`recovery_server_version`)
 - [x] Origin threaded through `insertSnapshot` / `createSnapshotFromScene` / `restoreVersion` / `resolveRecoveryConflict` and exposed via `listVersions` and `GET /api/documents/[id]/versions`
 - [x] History drawer renders origin badge after `Version N` using existing `bg-gray-100` style; not encoded in scene JSON or thumbnail path
@@ -208,3 +208,11 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] Single bottom `Confirm selection` button disabled until selection exists or while `busy`; clicking it calls `onChoose` exactly with selected choice; busy prevents selection/confirmation changes
 - [x] Maintained no Escape/backdrop close and editor load gate; no external deps or server change
 - [x] Focused TDD: `tests/recovery_modal.test.ts` (4 tests) observes real modal markup and pure guard — no initial selection (`aria-pressed="false"`) with disabled `Confirm selection` and summaries, hover visual, busy disables, error `role="alert"`, and `canConfirmSelection`/`confirmRecoveryChoice` proves selected choice invokes `onChoose` once (selected `aria-pressed="true"`/`border-blue-600`/`bg-blue-50`/`✓` is implemented in component, not directly rendered in this small suite); full suite 126 tests, `npm run typecheck` clean
+
+---
+
+## 15. Restore Pre-State Snapshot (2026-08-31)
+
+- [x] `restoreVersion` captures current scene and its thumbnail before replacement, snapshots that pre-restore state with `origin="restore"`, then applies selected version's scene as current and updates `documents.thumbnail_path` from restored version's thumbnail
+- [x] No new snapshot of selected/restored target is created; preserves authorization, `compactSceneFiles` validation, atomic rollback, snapshot cap/GC, thumbnail safety
+- [x] Focused TDD: `tests/versions.test.ts` and `tests/version_origin.test.ts` prove `v2` current → restore `v1` yields new snapshot of `v2` (not `v1`), document current `v1`, origin `restore`; full suite 126 tests, `npm run typecheck` clean

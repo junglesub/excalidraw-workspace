@@ -295,8 +295,9 @@ export function resolveRecoveryConflict(
 }
 
 /**
- * Restore a document to a past version. The restore is committed as a new
- * current state (a fresh snapshot of the restored scene is recorded).
+ * Restore a document to a past version. Snapshots the pre-restore current
+ * state with origin "restore", then applies the selected history version
+ * as the document current scene.
  */
 export function restoreVersion(
   docId: string,
@@ -311,13 +312,39 @@ export function restoreVersion(
     if (!version || version.document_id !== docId) {
       throw new HttpError(404, "Version not found");
     }
+    const preDoc = getDocumentRaw(docId);
+    if (!preDoc) throw new HttpError(404, "Document not found");
+    const preScene = jsonToScene(preDoc.scene);
+    const cfg = config();
+    let preThumbBuf: Buffer | null = null;
+    if (preDoc.thumbnail_path) {
+      const preThumbAbs = path.resolve(cfg.dataDir, preDoc.thumbnail_path);
+      if (existsSync(preThumbAbs)) {
+        try {
+          preThumbBuf = readFileSync(preThumbAbs);
+        } catch {
+          // ignore
+        }
+      }
+    } else {
+      const fallbackAbs = path.resolve(cfg.dataDir, `thumbnails/${docId}.png`);
+      if (existsSync(fallbackAbs)) {
+        try {
+          preThumbBuf = readFileSync(fallbackAbs);
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const newSnapshot = insertSnapshot(docId, preScene, actorId, true, preThumbBuf, { origin: "restore" });
+
     const scene = jsonToScene(version.scene);
     const compact = compactSceneFiles(docId, scene);
     getDb()
       .prepare("UPDATE documents SET scene = ?, updated_at = ? WHERE id = ?")
       .run(sceneToJson(compact), nowIso(), docId);
 
-    const cfg = config();
     let versionThumbBuf: Buffer | null = null;
     if (version.thumbnail_path) {
       const versionThumbAbs = path.resolve(cfg.dataDir, version.thumbnail_path);
@@ -330,17 +357,12 @@ export function restoreVersion(
       }
     }
 
-    // Commit the restore as a new current state snapshot using the version's thumbnail if available
-    const newSnapshot = insertSnapshot(docId, scene, actorId, true, versionThumbBuf, { origin: "restore" });
-
-    // If version had a real thumbnail, also update document-level thumbnail
     if (versionThumbBuf) {
       const docThumb = saveThumbnailFromBuffer(docId, versionThumbBuf);
       getDb()
         .prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?")
         .run(docThumb.relativePath, docId);
     } else {
-      // Keep existing thumbnails/<docId>.png or existing valid thumbnail_path without clobbering with stripes
       const doc = getDocumentRaw(docId);
       const docThumbPath = `thumbnails/${docId}.png`;
       const docThumbAbs = path.resolve(cfg.dataDir, docThumbPath);
