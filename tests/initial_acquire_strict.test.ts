@@ -413,16 +413,16 @@ describe("Initial acquire strict mode coordinator", () => {
       });
 
     // Simulated React effect lifecycle for doc-1
-    let coordinatorRef: InitialLeaseCoordinator | null = null;
+    const coordinatorRef: { current: InitialLeaseCoordinator | null } = { current: null };
 
     // Render 1 (Pure - no side effects)
     let currentDocId = "doc-1";
 
     // Committed Effect 1
-    if (!coordinatorRef || coordinatorRef.getDocId() !== currentDocId) {
-      coordinatorRef = makeCoordinator(currentDocId);
+    if (!coordinatorRef.current || coordinatorRef.current.getDocId() !== currentDocId) {
+      coordinatorRef.current = makeCoordinator(currentDocId);
     }
-    const unsubDoc1 = coordinatorRef.subscribe({
+    const unsubDoc1 = coordinatorRef.current.subscribe({
       onAcquired: () => {},
       onHeld: () => {},
       onError: () => {},
@@ -442,10 +442,10 @@ describe("Initial acquire strict mode coordinator", () => {
     expect(releases).toEqual([{ clientId: "client-nav", leaseToken: "token-doc-1", generation: 1 }]);
 
     // Committed Effect 2
-    if (!coordinatorRef || coordinatorRef.getDocId() !== currentDocId) {
-      coordinatorRef = makeCoordinator(currentDocId);
+    if (!coordinatorRef.current || coordinatorRef.current.getDocId() !== currentDocId) {
+      coordinatorRef.current = makeCoordinator(currentDocId);
     }
-    const unsubDoc2 = coordinatorRef.subscribe({
+    const unsubDoc2 = coordinatorRef.current.subscribe({
       onAcquired: () => {},
       onHeld: () => {},
       onError: () => {},
