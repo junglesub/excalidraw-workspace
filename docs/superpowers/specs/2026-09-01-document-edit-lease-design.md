@@ -1,7 +1,7 @@
 # Document-Scoped Single-Editor Lease Requirements and Design
 
 **Date:** 2026-09-01
-**Status:** Approved for implementation
+**Status:** Implemented — automated verification complete; manual browser verification pending
 **Scope:** One active canvas editor per document across users, browsers, devices, and tabs
 
 ## 1. Goal

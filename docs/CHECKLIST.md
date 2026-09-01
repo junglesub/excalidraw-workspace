@@ -216,3 +216,20 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] `restoreVersion` captures current scene and its thumbnail before replacement, snapshots that pre-restore state with `origin="restore"`, then applies selected version's scene as current and updates `documents.thumbnail_path` from restored version's thumbnail
 - [x] No new snapshot of selected/restored target is created; preserves authorization, `compactSceneFiles` validation, atomic rollback, snapshot cap/GC, thumbnail safety
 - [x] Focused TDD: `tests/versions.test.ts` and `tests/version_origin.test.ts` prove `v2` current → restore `v1` yields new snapshot of `v2` (not `v1`), document current `v1`, origin `restore`; full suite 126 tests, `npm run typecheck` clean
+
+---
+
+## 16. Document-Scoped Single-Editor Lease (2026-09-01)
+
+- [x] SQLite `document_edit_leases` table (generation retained after release, takeover fields cleared atomically, `CREATE TABLE IF NOT EXISTS` migration)
+- [x] Server state machine: `acquire`, `heartbeat` (2s), `request_takeover`, `poll_takeover` (1s), `release`, `assertActiveEditLease` with 90s expiry, 10s forced takeover, generation fencing, safe holder summaries (no token leakage)
+- [x] Single lease API `POST /api/documents/[id]/lease` with 5 actions, bounded validation, stable codes `EDIT_LEASE_HELD`/`TAKEOVER_IN_PROGRESS`/`EDIT_LEASE_LOST`
+- [x] Atomic fencing of `handleAutoSave`, `handleManualSave`, `resolveRecoveryConflict`, `restoreVersion` in same `BEGIN IMMEDIATE` transaction as write
+- [x] Client transport `getLeaseClientId` (sessionStorage), `acquireLease`/`heartbeatLease`/`requestTakeover`/`pollTakeover`/`releaseLease`, `ApiError` with status/code, credentials in save/recovery payloads
+- [x] Accessible `EditLeaseConflictModal` (role dialog, aria-modal, `already being edited`, `Open read-only`/`Take over editing`, busy disabled, error alert, no token leakage)
+- [x] Editor load gate: writable users acquire before canvas mount or localStorage; VIEWER/deleted never touch localStorage or leases
+- [x] Graceful handover: freeze canvas, cancel debounce, upload attachments, normal non-snapshot save, release/transfer, reload server scene, become read-only; forced takeover advances generation after 10s
+- [x] Centralized `EDIT_LEASE_LOST` handling (cancel timers, retain draft, fetch latest scene, read-only banner), pagehide best-effort release via `sendBeacon`/`keepalive`
+- [x] Title rename, sharing/permission, attachment upload, import, Trash, restore from Trash remain outside lease; no WebSocket/SSE/Redis/CRDT/queue/deps
+- [x] Focused TDD: `tests/edit_lease.test.ts`, `tests/edit_lease_route.test.ts`, `tests/edit_lease_fencing.test.ts`, `tests/client_edit_lease.test.ts`, `tests/edit_lease_modal.test.ts`, updated `tests/versions.test.ts`/`tests/version_origin.test.ts`/`tests/recovery.test.ts`/`tests/export_import.test.ts`/`tests/client_save_pipeline.test.ts`; full suite 155 tests, `npm run typecheck` clean
+- [ ] Browser manual verification (two writable users/tabs: conflict modal, Open read-only stays read-only and never touches draft, Take over graceful flush and read-only, forced takeover after 10s, stale tab cannot save, draft retained after loss, new editor reloads server scene before draft, VIEWER never sees modal or touches draft, deleted view read-only, title/share still work outside lease) — automated tests pass; manual browser scenarios not yet executed in this environment
