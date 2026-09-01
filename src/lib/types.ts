@@ -3,6 +3,20 @@
 export type Role = "USER" | "ADMIN";
 export type Permission = "OWNER" | "EDITOR" | "VIEWER";
 
+export interface EditLeaseCredentials {
+  clientId: string;
+  leaseToken: string;
+  generation: number;
+}
+
+export interface LeaseHolderSummary {
+  username: string;
+  acquiredAt: string;
+  heartbeatAt: string;
+}
+
+export type LeaseState = "acquired" | "held" | "takeover_pending" | "takeover_in_progress" | "lost";
+
 export interface UserRow {
   id: string;
   username: string;
