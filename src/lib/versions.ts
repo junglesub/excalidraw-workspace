@@ -9,6 +9,8 @@ import type { DocumentVersionRow, ExcalidrawScene, VersionOrigin } from "./types
 import { emptyScene, jsonToScene, sceneToJson } from "./types";
 import { HttpError } from "./http";
 import { serializeForComparison } from "./scene_normalize";
+import type { EditLeaseCredentials } from "./types";
+import { assertActiveEditLease } from "./edit_lease";
 
 export type { VersionOrigin };
 
@@ -163,6 +165,43 @@ export function snapshotDueForAutoSave(docId: string, intervalMs: number): boole
 
 export { serializeForComparison };
 
+export function handleAutoSave(
+  docId: string,
+  actorId: string,
+  role: "USER" | "ADMIN",
+  adminMode: boolean,
+  scene: ExcalidrawScene,
+  thumbnailBuffer: Buffer | null,
+  snapshotRequested: boolean,
+  lease: EditLeaseCredentials,
+): { snapshotCreated: boolean; updatedAt: string } {
+  return transaction(() => {
+    requireWrite(docId, actorId, role, adminMode);
+    assertActiveEditLease({ docId, userId: actorId, role, adminMode, clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation });
+    const compactScene = compactSceneFiles(docId, scene, { allowInlineDataUrl: false });
+    let thumbPath: string | null = null;
+    try {
+      if (thumbnailBuffer) {
+        thumbPath = saveThumbnailFromBuffer(docId, thumbnailBuffer).relativePath;
+      } else if (!getDocumentRaw(docId)?.thumbnail_path) {
+        thumbPath = saveThumbnail(docId, compactScene).relativePath;
+      }
+    } catch {
+      // ignore
+    }
+    getDb()
+      .prepare("UPDATE documents SET scene = ?, thumbnail_path = COALESCE(?, thumbnail_path), updated_at = ? WHERE id = ?")
+      .run(sceneToJson(compactScene), thumbPath, nowIso(), docId);
+    gcUnreferencedAttachments(docId);
+    const snapshotCreated = snapshotRequested && snapshotDueForAutoSave(docId, AUTO_SNAPSHOT_INTERVAL_MS);
+    if (snapshotCreated) {
+      createSnapshotFromScene(docId, compactScene, actorId, true, thumbnailBuffer, { origin: "auto_snapshot" });
+    }
+    const updated = getDocumentRaw(docId)!;
+    return { snapshotCreated, updatedAt: updated.updated_at };
+  });
+}
+
 export function handleManualSave(
   docId: string,
   actorId: string,
@@ -170,9 +209,11 @@ export function handleManualSave(
   adminMode: boolean,
   scene: ExcalidrawScene,
   thumbnailBuffer: Buffer | null,
+  lease: EditLeaseCredentials,
 ): { alreadySaved: boolean; snapshotCreated: boolean; snapshot?: DocumentVersionRow; versions: Omit<DocumentVersionRow, "scene">[] } {
-  requireWrite(docId, actorId, role, adminMode);
   return transaction(() => {
+    requireWrite(docId, actorId, role, adminMode);
+    assertActiveEditLease({ docId, userId: actorId, role, adminMode, clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation });
     const current = getDocumentRaw(docId);
     if (!current) throw new HttpError(404, "Document not found");
 
@@ -251,9 +292,11 @@ export function resolveRecoveryConflict(
   role: "USER" | "ADMIN",
   adminMode: boolean,
   input: ResolveRecoveryConflictInput,
+  lease: EditLeaseCredentials,
 ): ResolveRecoveryConflictResult {
-  requireWrite(docId, actorId, role, adminMode);
   return transaction(() => {
+    requireWrite(docId, actorId, role, adminMode);
+    assertActiveEditLease({ docId, userId: actorId, role, adminMode, clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation });
     const current = getDocumentRaw(docId);
     if (!current) throw new HttpError(404, "Document not found");
     const serverScene = jsonToScene(current.scene);
@@ -305,9 +348,11 @@ export function restoreVersion(
   actorId: string,
   role: "USER" | "ADMIN",
   adminMode: boolean,
+  lease: EditLeaseCredentials,
 ): DocumentVersionRow {
-  requireWrite(docId, actorId, role, adminMode);
   return transaction(() => {
+    requireWrite(docId, actorId, role, adminMode);
+    assertActiveEditLease({ docId, userId: actorId, role, adminMode, clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation });
     const version = getVersion(versionId);
     if (!version || version.document_id !== docId) {
       throw new HttpError(404, "Version not found");

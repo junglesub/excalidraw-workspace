@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { getDb, resetDb } from "@/lib/db";
 import { resetConfig } from "@/lib/config";
 import { createUser } from "@/lib/users";
+import { acquireEditLease } from "@/lib/edit_lease";
 import { createDocument, getDocumentRaw, MAX_VERSIONS } from "@/lib/documents";
 import {
   createSnapshotFromScene,
@@ -16,6 +17,13 @@ import {
 import { emptyScene, jsonToScene, sceneToJson } from "@/lib/types";
 import type { ExcalidrawScene } from "@/lib/types";
 import { storeAttachment } from "@/lib/attachments";
+
+
+function leaseFor(docId: string, userId: string) {
+  const r = acquireEditLease({ docId, userId, role: "USER", adminMode: false, clientId: "c-test", leaseToken: "t-test-" + userId.slice(0,8) });
+  if (r.state !== "acquired") throw new Error("lease acquire failed");
+  return { clientId: "c-test", leaseToken: "t-test-" + userId.slice(0,8), generation: r.generation };
+}
 
 describe("Version History and Snapshots", () => {
   beforeEach(() => {
@@ -85,7 +93,7 @@ describe("Version History and Snapshots", () => {
       .run(sceneToJson(v2Scene), new Date().toISOString(), doc.id);
 
     // Restore back to v1
-    restoreVersion(doc.id, snap1.id, user.id, "USER", false);
+    restoreVersion(doc.id, snap1.id, user.id, "USER", false, leaseFor(doc.id, user.id));
 
     // Document scene should now contain v1 elements
     const currentDoc = getDocumentRaw(doc.id)!;
@@ -113,7 +121,7 @@ describe("Version History and Snapshots", () => {
       preserveDiscarded: true,
       expectedServerUpdatedAt: doc.updated_at,
       clientScene,
-    });
+    }, leaseFor(doc.id, user.id));
 
     expect(result.ok).toBe(true);
     expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual(clientScene.elements);
@@ -134,7 +142,7 @@ describe("Version History and Snapshots", () => {
       preserveDiscarded: true,
       expectedServerUpdatedAt: doc.updated_at,
       clientScene,
-    });
+    }, leaseFor(doc.id, user.id));
 
     expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual(serverScene.elements);
     const snapshot = getDb()
@@ -162,7 +170,7 @@ describe("Version History and Snapshots", () => {
           },
         },
       },
-    });
+    }, leaseFor(doc.id, user.id));
     expect(listVersions(doc.id)).toHaveLength(0);
   });
 
@@ -175,7 +183,7 @@ describe("Version History and Snapshots", () => {
       preserveDiscarded: false,
       expectedServerUpdatedAt: doc.updated_at,
       clientScene,
-    });
+    }, leaseFor(doc.id, user.id));
     expect(listVersions(doc.id)).toHaveLength(0);
     expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual(clientScene.elements);
   });
@@ -193,7 +201,7 @@ describe("Version History and Snapshots", () => {
       preserveDiscarded: true,
       expectedServerUpdatedAt: doc.updated_at,
       clientScene: { ...emptyScene(), elements: [{ id: "client", type: "ellipse" }] },
-    });
+    }, leaseFor(doc.id, user.id));
 
     expect(result).toMatchObject({
       ok: false,
@@ -220,7 +228,7 @@ describe("Version History and Snapshots", () => {
         preserveDiscarded: true,
         expectedServerUpdatedAt: doc.updated_at,
         clientScene: missingFileScene,
-      }),
+      }, leaseFor(doc.id, user.id)),
     ).toThrow(/attachment/i);
     expect(listVersions(doc.id)).toHaveLength(0);
     expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual(serverScene.elements);
@@ -230,13 +238,13 @@ describe("Version History and Snapshots", () => {
     const user = createUser("alice", "pass123", "USER");
     const scene = { ...emptyScene(), elements: [{ id: "1", type: "rectangle" }] };
     const doc = createDocument(user.id, scene, "Doc");
-    const first = handleManualSave(doc.id, user.id, "USER", false, scene, null);
+    const first = handleManualSave(doc.id, user.id, "USER", false, scene, null, leaseFor(doc.id, user.id));
     expect(first.alreadySaved).toBe(false);
     expect(first.snapshotCreated).toBe(true);
     expect(listVersions(doc.id)).toHaveLength(1);
     const latestId = listVersions(doc.id)[0].id;
     const updatedBefore = getDocumentRaw(doc.id)!.updated_at;
-    const second = handleManualSave(doc.id, user.id, "USER", false, scene, null);
+    const second = handleManualSave(doc.id, user.id, "USER", false, scene, null, leaseFor(doc.id, user.id));
     expect(second.alreadySaved).toBe(true);
     expect(second.snapshotCreated).toBe(false);
     expect(listVersions(doc.id)).toHaveLength(1);
@@ -277,7 +285,7 @@ describe("Version History and Snapshots", () => {
     try {
       storeAttachment(doc.id, "f-b", "image/png", dummy, "f-b");
     } catch {}
-    handleManualSave(doc.id, user.id, "USER", false, base, null);
+    handleManualSave(doc.id, user.id, "USER", false, base, null, leaseFor(doc.id, user.id));
     expect(listVersions(doc.id)).toHaveLength(1);
     // Reordered without dataURL but different file order should be considered equal for alreadySaved
     const reordered: ExcalidrawScene = {
@@ -288,7 +296,7 @@ describe("Version History and Snapshots", () => {
       },
     };
     expect(serializeForComparison(base)).toBe(serializeForComparison(reordered));
-    const second = handleManualSave(doc.id, user.id, "USER", false, reordered, null);
+    const second = handleManualSave(doc.id, user.id, "USER", false, reordered, null, leaseFor(doc.id, user.id));
     expect(second.alreadySaved).toBe(true);
     expect(second.snapshotCreated).toBe(false);
     expect(listVersions(doc.id)).toHaveLength(1);
@@ -300,7 +308,7 @@ describe("Version History and Snapshots", () => {
     const doc = createDocument(user.id, scene, "Doc");
     expect(listVersions(doc.id)).toHaveLength(0);
     const beforeUpdated = getDocumentRaw(doc.id)!.updated_at;
-    const result = handleManualSave(doc.id, user.id, "USER", false, scene, null);
+    const result = handleManualSave(doc.id, user.id, "USER", false, scene, null, leaseFor(doc.id, user.id));
     expect(result.alreadySaved).toBe(false);
     expect(result.snapshotCreated).toBe(true);
     expect(result.snapshot?.origin).toBe("manual_save");
@@ -316,7 +324,7 @@ describe("Version History and Snapshots", () => {
     const sceneB = { ...emptyScene(), elements: [{ id: "b", type: "ellipse" }] };
     const doc = createDocument(user.id, sceneA, "Doc");
     // Create initial snapshot with sceneA
-    handleManualSave(doc.id, user.id, "USER", false, sceneA, null);
+    handleManualSave(doc.id, user.id, "USER", false, sceneA, null, leaseFor(doc.id, user.id));
     expect(listVersions(doc.id)).toHaveLength(1);
     // Simulate document updated to sceneB via auto-save or direct (without manual snapshot)
     getDb()
@@ -325,7 +333,7 @@ describe("Version History and Snapshots", () => {
     expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual(sceneB.elements);
     // Now latest snapshot is sceneA, current document is sceneB, incoming is sceneB (clean manual save)
     const beforeUpdated = getDocumentRaw(doc.id)!.updated_at;
-    const result = handleManualSave(doc.id, user.id, "USER", false, sceneB, null);
+    const result = handleManualSave(doc.id, user.id, "USER", false, sceneB, null, leaseFor(doc.id, user.id));
     expect(result.alreadySaved).toBe(false);
     expect(result.snapshotCreated).toBe(true);
     expect(listVersions(doc.id)).toHaveLength(2);
@@ -340,11 +348,11 @@ describe("Version History and Snapshots", () => {
     const sceneA = { ...emptyScene(), elements: [{ id: "a", type: "rectangle" }] };
     const sceneB = { ...emptyScene(), elements: [{ id: "a", type: "rectangle" }, { id: "b", type: "ellipse" }] };
     const doc = createDocument(user.id, sceneA, "Doc");
-    handleManualSave(doc.id, user.id, "USER", false, sceneA, null);
+    handleManualSave(doc.id, user.id, "USER", false, sceneA, null, leaseFor(doc.id, user.id));
     expect(listVersions(doc.id)).toHaveLength(1);
     const beforeUpdated = getDocumentRaw(doc.id)!.updated_at;
     // Dirty: incoming sceneB differs from current document sceneA
-    const result = handleManualSave(doc.id, user.id, "USER", false, sceneB, null);
+    const result = handleManualSave(doc.id, user.id, "USER", false, sceneB, null, leaseFor(doc.id, user.id));
     expect(result.alreadySaved).toBe(false);
     expect(result.snapshotCreated).toBe(true);
     expect(listVersions(doc.id)).toHaveLength(2);
@@ -359,7 +367,7 @@ describe("Version History and Snapshots", () => {
     const sceneB = { ...emptyScene(), elements: [{ id: "b", type: "ellipse" }] };
     const doc = createDocument(user.id, sceneA, "Doc");
     // First manual save creates snapshot with sceneA (latest = sceneA, current = sceneA)
-    handleManualSave(doc.id, user.id, "USER", false, sceneA, null);
+    handleManualSave(doc.id, user.id, "USER", false, sceneA, null, leaseFor(doc.id, user.id));
     expect(listVersions(doc.id)).toHaveLength(1);
     expect(serializeForComparison(jsonToScene(getDocumentRaw(doc.id)!.scene))).toBe(serializeForComparison(sceneA));
     // Simulate current document diverging to sceneB without a new snapshot (latest still sceneA, current is sceneB)
@@ -372,7 +380,7 @@ describe("Version History and Snapshots", () => {
     // Incoming matches old snapshot (sceneA) but current differs (sceneB) - must NOT be alreadySaved
     const beforeCount = listVersions(doc.id).length;
     const beforeUpdated = getDocumentRaw(doc.id)!.updated_at;
-    const result = handleManualSave(doc.id, user.id, "USER", false, sceneA, null);
+    const result = handleManualSave(doc.id, user.id, "USER", false, sceneA, null, leaseFor(doc.id, user.id));
     expect(result.alreadySaved).toBe(false);
     expect(result.snapshotCreated).toBe(true);
     expect(listVersions(doc.id)).toHaveLength(beforeCount + 1);
