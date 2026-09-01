@@ -19,8 +19,9 @@ describe("Re-entry lease false-conflict", () => {
     const first = acquireEditLease({ docId: doc.id, userId: user.id, role: "USER", adminMode: false, clientId: "c1", leaseToken: "t1" }, now);
     expect(first.state).toBe("acquired");
     const firstGen = (first as { generation: number }).generation;
-    // Same tab reloads 1s later: sessionStorage clientId persists, page generates a fresh token.
-    const second = acquireEditLease({ docId: doc.id, userId: user.id, role: "USER", adminMode: false, clientId: "c1", leaseToken: "t2" }, new Date(now.getTime() + 1_000));
+    // Same tab reloads 1s later: sessionStorage clientId persists, page generates a fresh
+    // token, and the client sends the reentry attestation after its Web Locks liveness probe.
+    const second = acquireEditLease({ docId: doc.id, userId: user.id, role: "USER", adminMode: false, clientId: "c1", leaseToken: "t2", reentry: true }, new Date(now.getTime() + 1_000));
     expect(second.state).toBe("acquired");
     if (second.state === "acquired") {
       expect(second.generation).toBe(firstGen + 1);
@@ -37,6 +38,25 @@ describe("Re-entry lease false-conflict", () => {
     ).toThrowError();
     const hb = heartbeatEditLease({ docId: doc.id, userId: user.id, role: "USER", adminMode: false, clientId: "c1", leaseToken: "t2", generation: firstGen + 1 }, new Date(now.getTime() + 3_000));
     expect(hb.state).toBe("acquired");
+  });
+
+  it("same-user concurrent-tab safety: copied sessionStorage clientId cannot rotate a live lease", () => {
+    const user = createUser("owner", "pass123", "USER");
+    const doc = createDocument(user.id, emptyScene(), "Doc");
+    const now = new Date();
+    const first = acquireEditLease({ docId: doc.id, userId: user.id, role: "USER", adminMode: false, clientId: "c1", leaseToken: "t1" }, now);
+    expect(first.state).toBe("acquired");
+    const firstGen = (first as { generation: number }).generation;
+    // An opener-created window or duplicated tab copies sessionStorage, so it presents the
+    // SAME clientId. Without the reentry attestation (no Web Locks probe win), the acquire
+    // must stay held and must not rotate the live editor's lease.
+    const copied = acquireEditLease({ docId: doc.id, userId: user.id, role: "USER", adminMode: false, clientId: "c1", leaseToken: "t2" }, new Date(now.getTime() + 1_000));
+    expect(copied.state).toBe("held");
+    const copiedAgain = acquireEditLease({ docId: doc.id, userId: user.id, role: "USER", adminMode: false, clientId: "c1", leaseToken: "t3", reentry: false }, new Date(now.getTime() + 1_100));
+    expect(copiedAgain.state).toBe("held");
+    // The original live editor's lease is untouched.
+    const beat = heartbeatEditLease({ docId: doc.id, userId: user.id, role: "USER", adminMode: false, clientId: "c1", leaseToken: "t1", generation: firstGen }, new Date(now.getTime() + 2_000));
+    expect(beat.state).toBe("acquired");
   });
 
   it("same user second live tab/session (different clientId, fresh heartbeat) remains held", () => {
@@ -89,7 +109,7 @@ describe("Re-entry lease false-conflict", () => {
     expect(first.state).toBe("acquired");
     const pending = requestEditTakeover({ docId: doc.id, userId: other.id, role: "USER", adminMode: false, clientId: "oc1", leaseToken: "ot1" }, new Date(now.getTime() + 11_000));
     expect(pending.state).toBe("takeover_pending");
-    const second = acquireEditLease({ docId: doc.id, userId: owner.id, role: "USER", adminMode: false, clientId: "c1", leaseToken: "t2" }, new Date(now.getTime() + 11_000));
+    const second = acquireEditLease({ docId: doc.id, userId: owner.id, role: "USER", adminMode: false, clientId: "c1", leaseToken: "t2", reentry: true }, new Date(now.getTime() + 11_000));
     expect(second.state).toBe("held");
   });
 

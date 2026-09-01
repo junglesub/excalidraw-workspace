@@ -107,9 +107,65 @@ async function leaseFetchWithHeld(docId: string, body: Record<string, unknown>, 
   return data as LeaseResponse;
 }
 
-export function acquireLease(docId: string, identity: LeaseCandidate, fetchFn?: typeof fetch, adminMode?: boolean): Promise<LeaseResponse> {
-  return leaseFetchWithHeld(docId, { action: "acquire", clientId: identity.clientId, leaseToken: identity.leaseToken }, fetchFn, adminMode);
+export function acquireLease(docId: string, identity: LeaseCandidate, fetchFn?: typeof fetch, adminMode?: boolean, options?: { reentry?: boolean }): Promise<LeaseResponse> {
+  const body: Record<string, unknown> = { action: "acquire", clientId: identity.clientId, leaseToken: identity.leaseToken };
+  if (options?.reentry === true) body.reentry = true;
+  return leaseFetchWithHeld(docId, body, fetchFn, adminMode);
 }
+
+// Web Locks-based per-context liveness. A lock is held by the live editor document,
+// released when that document unloads, and is never copied to opener-created windows
+// or duplicated tabs (unlike sessionStorage, which MDN documents as copied to a page
+// with an opener). This gives the re-entry decision a truly per-browsing-context
+// identity: survive reload/navigation, not copied to a newly opened editor context.
+
+export const LEASE_HOLD_LOCK_PREFIX = "edit-lease-hold:";
+
+export function leaseHoldLockName(docId: string, clientId: string): string {
+  return `${LEASE_HOLD_LOCK_PREFIX}${docId}:${clientId}`;
+}
+
+interface LockManagerLike {
+  request: (name: string, options: { ifAvailable?: boolean }, callback: (lock: unknown) => Promise<void>) => Promise<unknown>;
+}
+
+function getLockManager(): LockManagerLike | null {
+  if (typeof navigator === "undefined") return null;
+  const locks = (navigator as unknown as { locks?: LockManagerLike }).locks;
+  return locks ?? null;
+}
+
+export async function probeReentryLock(docId: string, clientId: string, options?: { attempts?: number; delayMs?: number; locks?: LockManagerLike | null }): Promise<boolean> {
+  const locks = options?.locks !== undefined ? options.locks : getLockManager();
+  if (!locks) return false;
+  const attempts = options?.attempts ?? 4;
+  const delayMs = options?.delayMs ?? 150;
+  const name = leaseHoldLockName(docId, clientId);
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let granted = false;
+    try {
+      await locks.request(name, { ifAvailable: true }, async (lock) => {
+        granted = lock != null;
+      });
+    } catch {
+      return false;
+    }
+    if (granted) return true;
+    if (attempt < attempts - 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return false;
+}
+
+export function requestLeaseHold(docId: string, clientId: string, onHeld: (release: () => void) => void, locksOverride?: LockManagerLike | null): void {
+  const locks = locksOverride !== undefined ? locksOverride : getLockManager();
+  if (!locks) return;
+  void locks
+    .request(leaseHoldLockName(docId, clientId), { ifAvailable: true }, () => new Promise<void>((resolve) => { onHeld(resolve); }))
+    .catch(() => {});
+}
+
 
 export function heartbeatLease(docId: string, lease: EditLeaseCredentials, fetchFn?: typeof fetch, adminMode?: boolean): Promise<LeaseResponse> {
   return leaseFetchWithHeld(docId, { action: "heartbeat", clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation }, fetchFn, adminMode);

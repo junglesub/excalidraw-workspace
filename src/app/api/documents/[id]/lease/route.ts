@@ -49,7 +49,7 @@ export async function POST(req: Request, { params }: Ctx) {
         return json({ error: "clientId and leaseToken are required", code: "INVALID_CREDENTIALS" }, 400);
       }
       const result = acquireEditLease(
-        { docId: id, userId: user.id, role: user.role, adminMode, clientId, leaseToken },
+        { docId: id, userId: user.id, role: user.role, adminMode, clientId, leaseToken, reentry: body.reentry === true },
       );
       if (result.state === "held") {
         return json({ ...result, code: "EDIT_LEASE_HELD" }, 409);

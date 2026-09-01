@@ -151,10 +151,12 @@ On `pagehide`, the browser sends a best-effort credentialed release using `navig
 
 ### Re-entry semantics
 
-The lease `clientId` is stored in `sessionStorage` and is therefore per-tab: it survives reload and in-app navigation within one tab, but a second tab, new window, or a relaunched browser always presents a new `clientId`. Each page instance generates a fresh lease token. The server uses this to distinguish re-entry:
+The lease `clientId` is stored in `sessionStorage`, which survives reload and in-app navigation within one tab. Per MDN, sessionStorage is copied to pages with an opener (and by tab duplication), so a clientId can be shared by two live contexts and must not be treated as a unique tab identity by itself. Each page instance generates a fresh lease token. The server distinguishes re-entry as follows:
 
-- Same user + same `clientId` + different token = the same tab re-entered. `acquire` re-acquires immediately, rotating the token and advancing the generation so the previous page instance's in-flight requests (including a late pagehide release) are fenced out. This is the immediate reload/navigation re-entry path.
-- Same user + different `clientId` = a second screen. It is indistinguishable server-side from a relaunched browser, so it stays behind the conflict prompt with the takeover path. Immediate no-takeover recovery is only possible once the holder heartbeat is stale (past the 10-second takeover deadline), and it never destroys a structurally valid pending takeover.
+- Same user + same `clientId` + different token: potentially the same tab re-entered, but potentially an opener-created or duplicated context sharing the copied clientId. The server therefore only re-acquires when the request carries an explicit `reentry` attestation, which the client sets after winning a Web Locks liveness probe on the per-context hold lock `edit-lease-hold:{docId}:{clientId}`. A Web Lock is held by the live editor document, released when it unloads, and never copied to a new context, so winning the probe proves no live context is editing with these credentials. On success the server rotates the token and advances the generation, fencing the previous page instance's in-flight requests (including a late pagehide release). The live holder keeps this lock held while it owns the lease.
+- Same user + different `clientId`, or a denied probe: treated as a second screen. It stays behind the conflict prompt with the takeover path. Immediate no-takeover recovery is only possible once the holder heartbeat is stale (past the 10-second takeover deadline), and it never destroys a structurally valid pending takeover.
+- Browsers without Web Locks support follow the denied-probe path (conflict + takeover); no rotation happens without the attestation.
+
 
 ## 8. API contract
 

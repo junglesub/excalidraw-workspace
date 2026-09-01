@@ -154,4 +154,25 @@ describe("Lease API route", () => {
     expect(JSON.stringify(body)).not.toContain("t-r-secret");
     expect(JSON.stringify(body)).not.toContain("c-r");
   });
+
+  it("requires the reentry attestation for same-context re-acquire and honors it", async () => {
+    const owner = createUser("owner", "pass123", "USER");
+    const doc = createDocument(owner.id, emptyScene(), "Doc");
+    const sessOwner = createSession(owner.id);
+
+    const acq = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c1", leaseToken: "t1" }), { params: Promise.resolve({ id: doc.id }) });
+    expect(acq.status).toBe(200);
+
+    // Same clientId, new token, no attestation: held (copied sessionStorage clientId collision safe)
+    const held = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c1", leaseToken: "t2" }), { params: Promise.resolve({ id: doc.id }) });
+    expect(held.status).toBe(409);
+    expect((await held.json()).state).toBe("held");
+
+    // With the reentry attestation: immediate re-acquire
+    const reentry = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c1", leaseToken: "t2", reentry: true }), { params: Promise.resolve({ id: doc.id }) });
+    expect(reentry.status).toBe(200);
+    const reentryBody = await reentry.json();
+    expect(reentryBody.state).toBe("acquired");
+    expect(reentryBody.leaseToken).toBe("t2");
+  });
 });

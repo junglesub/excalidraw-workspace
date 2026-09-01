@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft } from "@/lib/client_edit_lease";
+import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, leaseHoldLockName, probeReentryLock, requestLeaseHold } from "@/lib/client_edit_lease";
 import { ApiError } from "@/lib/client";
 import { saveDocumentScene, resolveClientRecovery } from "@/lib/client_save";
 import { emptyScene } from "@/lib/types";
@@ -123,5 +123,72 @@ describe("Client edit lease transport", () => {
     const result = await acquireLease("doc1", { clientId: "c2", leaseToken: "t2" }, fetchMock as unknown as typeof fetch);
     expect(result.state).toBe("held");
     expect((result as { holder: { username: string } }).holder.username).toBe("bob");
+  });
+
+  it("sends the reentry attestation flag only when requested", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ state: "acquired", generation: 2, clientId: "c1", leaseToken: "t2", acquiredAt: "a", heartbeatAt: "b", expiresAt: "e" }), { status: 200 });
+    });
+    await acquireLease("doc1", { clientId: "c1", leaseToken: "t2" }, fetchMock as unknown as typeof fetch);
+    expect(bodies[0].reentry).toBeUndefined();
+    await acquireLease("doc1", { clientId: "c1", leaseToken: "t2" }, fetchMock as unknown as typeof fetch, undefined, { reentry: true });
+    expect(bodies[1].reentry).toBe(true);
+  });
+});
+
+describe("Web Locks per-context re-entry identity", () => {
+  interface FakeLockManagerState {
+    held: Set<string>;
+    requests: Array<{ name: string; options: { ifAvailable?: boolean } }>;
+  }
+
+  function makeLockManager(state: FakeLockManagerState) {
+    return {
+      request: (name: string, options: { ifAvailable?: boolean }, callback: (lock: unknown) => Promise<void>) => {
+        state.requests.push({ name, options });
+        const lock = state.held.has(name) ? null : { name, mode: "exclusive" };
+        if (lock) state.held.add(name);
+        return callback(lock).finally(() => {
+          if (lock) state.held.delete(name);
+        });
+      },
+    };
+  }
+
+  it("builds per-context lock names", () => {
+    expect(leaseHoldLockName("doc1", "c1")).toBe("edit-lease-hold:doc1:c1");
+  });
+
+  it("probe returns true only when the per-context lock is free (previous context dead)", async () => {
+    const state: FakeLockManagerState = { held: new Set(), requests: [] };
+    const free = await probeReentryLock("doc1", "c1", { attempts: 2, delayMs: 1, locks: makeLockManager(state) });
+    expect(free).toBe(true);
+    expect(state.requests[0].name).toBe("edit-lease-hold:doc1:c1");
+    expect(state.requests[0].options.ifAvailable).toBe(true);
+  });
+
+  it("probe returns false when a live context holds the lock (copied clientId collision)", async () => {
+    const state: FakeLockManagerState = { held: new Set(["edit-lease-hold:doc1:c1"]), requests: [] };
+    const busy = await probeReentryLock("doc1", "c1", { attempts: 3, delayMs: 1, locks: makeLockManager(state) });
+    expect(busy).toBe(false);
+    expect(state.requests.length).toBe(3);
+  });
+
+  it("probe is safe-fail when the Web Locks API is unavailable", async () => {
+    const busy = await probeReentryLock("doc1", "c1", { locks: null });
+    expect(busy).toBe(false);
+  });
+
+  it("requestLeaseHold holds the lock until released", async () => {
+    const state: FakeLockManagerState = { held: new Set(), requests: [] };
+    let releaseFn: (() => void) | null = null;
+    requestLeaseHold("doc1", "c1", (release) => { releaseFn = release; }, makeLockManager(state));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(state.held.has("edit-lease-hold:doc1:c1")).toBe(true);
+    (releaseFn as unknown as () => void)();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(state.held.has("edit-lease-hold:doc1:c1")).toBe(false);
   });
 });

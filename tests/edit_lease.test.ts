@@ -27,7 +27,7 @@ describe("Document edit lease state machine", () => {
     return createDocument(ownerId, emptyScene(), "Doc");
   }
 
-  function identity(docId: string, userId: string, overrides: Partial<{ clientId: string; leaseToken: string }> = {}) {
+  function identity(docId: string, userId: string, overrides: Partial<{ clientId: string; leaseToken: string; reentry: boolean }> = {}) {
     return {
       docId,
       userId,
@@ -35,6 +35,7 @@ describe("Document edit lease state machine", () => {
       adminMode: false,
       clientId: overrides.clientId ?? "client-a",
       leaseToken: overrides.leaseToken ?? "token-a",
+      ...(overrides.reentry !== undefined ? { reentry: overrides.reentry } : {}),
     };
   }
 
@@ -52,8 +53,9 @@ describe("Document edit lease state machine", () => {
       expect(retry.generation).toBe(firstGen);
     }
 
-    // Same tab re-entry (same per-tab clientId, fresh page token) re-acquires immediately
-    const reacquired = acquireEditLease(identity(doc.id, owner.id, { leaseToken: "token-b" }), NOW);
+    // Same tab re-entry (same per-tab clientId, fresh page token) re-acquires immediately,
+    // but only with the client's Web Locks re-entry attestation.
+    const reacquired = acquireEditLease(identity(doc.id, owner.id, { leaseToken: "token-b", reentry: true }), NOW);
     expect(reacquired).toMatchObject({ state: "acquired" });
     if (reacquired.state === "acquired") {
       expect(reacquired.generation).toBe(firstGen + 1);

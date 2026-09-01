@@ -82,6 +82,13 @@ export interface LeaseIdentityInput {
   adminMode: boolean;
   clientId: string;
   leaseToken: string;
+  /**
+   * Client re-entry attestation: set only after the client verified via a Web Locks
+   * liveness probe that no other live editor context holds this per-context lock.
+   * sessionStorage clientId is copied to opener-created windows/duplicated tabs, so
+   * a same-clientId acquire alone must never rotate the lease of a live context.
+   */
+  reentry?: boolean;
 }
 
 export interface ActiveLeaseInput extends LeaseIdentityInput {
@@ -213,22 +220,26 @@ export function acquireEditLease(input: LeaseIdentityInput, now?: Date): LeaseRe
     }
 
     // Re-entry handling for the same user (evidence-based semantics):
-    // - sessionStorage clientId is per-tab and survives reload/navigation, while each
-    //   page instance generates a fresh lease token (EditorClient). Therefore
-    //   same user + same per-tab clientId + different token means the SAME tab
-    //   re-entered (reload/navigation): re-acquire immediately, rotating the token and
-    //   advancing generation so the previous page instance's in-flight requests
-    //   (including a late best-effort pagehide release) are fenced out.
-    // - A second tab, new window, or relaunched browser always presents a different
-    //   clientId and is indistinguishable server-side from any other screen of the
-    //   same user, so the global one-editor conflict is preserved. Recovery without
-    //   takeover is only possible once the holder heartbeat is stale
-    //   (> TAKEOVER_TIMEOUT_MS), consistent with forced-takeover semantics.
+    // - MDN: "If the page has an opener, the sessionStorage is initially a copy of the
+    //   opener's sessionStorage object" (and duplicated tabs copy it too), so a
+    //   clientId shared by two live contexts is possible and same-clientId alone must
+    //   never rotate the lease. Rotation therefore requires an explicit `reentry`
+    //   attestation, which the client sets only after winning a Web Locks liveness
+    //   probe for this per-context lock (locks are held by the live document, released
+    //   on unload, and never copied to opener/duplicate contexts). Token rotation and
+    //   generation advance fence the previous page instance's in-flight requests
+    //   (including a late best-effort pagehide release).
+    // - A different clientId (new tab/window/relaunched browser) is indistinguishable
+    //   server-side from any other screen of the same user, so the global one-editor
+    //   conflict is preserved. Recovery without takeover is only possible once the
+    //   holder heartbeat is stale (> TAKEOVER_TIMEOUT_MS), consistent with
+    //   forced-takeover semantics.
     if (row.holder_user_id === input.userId) {
       const lastBeat = row.heartbeat_at ? Date.parse(row.heartbeat_at) : NaN;
       const heartbeatStale = Number.isNaN(lastBeat) || nowDate.getTime() - lastBeat > TAKEOVER_TIMEOUT_MS;
       const pendingBlocked = !!row.takeover_request_id && !isTakeoverExpired(row, nowDate);
-      if (!pendingBlocked && (row.holder_client_id === input.clientId || heartbeatStale)) {
+      const attestedSameContextReentry = input.reentry === true && row.holder_client_id === input.clientId;
+      if (!pendingBlocked && (attestedSameContextReentry || heartbeatStale)) {
         const generation = row.generation + 1;
         const iso = nowDate.toISOString();
         const expiresAt = new Date(nowDate.getTime() + LEASE_TTL_MS).toISOString();
