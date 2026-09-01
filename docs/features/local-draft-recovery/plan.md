@@ -8,7 +8,7 @@
 
 **Tech Stack:** Next.js 15 App Router, React 18, TypeScript 5.5, `@excalidraw/excalidraw` 0.18.1, Node built-in `node:sqlite`, Vitest 2.1, existing multipart attachment API.
 
-**Spec:** `docs/superpowers/specs/2026-08-31-local-draft-recovery-conflict-design.md`
+**Spec:** `docs/features/local-draft-recovery/design.md`
 
 ## Global Constraints
 
@@ -36,8 +36,8 @@
 | `tests/versions.test.ts` | Atomic domain behavior, rollback, retention, and selected/unselected scene assertions. |
 | `tests/recovery.test.ts` | Recovery route validation, permissions, success contract, and `409` contract. |
 | `tests/recovery_modal.test.ts` | Static accessible markup and required controls without adding a browser-test dependency. |
-| `docs/ATTACHMENT_FILE_TRANSFER_STATUS.md` | Implemented status and verification evidence. |
-| `docs/CHECKLIST.md` | Regression scenarios and manual browser acceptance checks. |
+| `docs/features/attachment-transfer/status.md` | Implemented status and verification evidence. |
+| `docs/project/CHECKLIST.md` | Regression scenarios and manual browser acceptance checks. |
 
 ---
 
@@ -1388,9 +1388,9 @@ git commit -m "feat(editor): gate loading on draft conflict resolution"
 ### Task 7: Documentation, Full Regression, and Manual Browser Acceptance
 
 **Files:**
-- Modify: `docs/ATTACHMENT_FILE_TRANSFER_STATUS.md:64-end`
-- Modify: `docs/CHECKLIST.md:140-end`
-- Modify: `docs/superpowers/specs/2026-08-31-local-draft-recovery-conflict-design.md:1-4`
+- Modify: `docs/features/attachment-transfer/status.md:64-end`
+- Modify: `docs/project/CHECKLIST.md:140-end`
+- Modify: `docs/features/local-draft-recovery/design.md:1-4`
 - Verify: all source and test files from Tasks 1-6
 
 **Interfaces:**
@@ -1446,9 +1446,9 @@ Verify these exact cases in a browser:
 
 - [ ] **Step 5: Record verified behavior in existing documentation**
 
-In `docs/ATTACHMENT_FILE_TRANSFER_STATUS.md`, add a resolved-status table beneath the audit findings with each prior finding mapped to its implemented correction and test file.
+In `docs/features/attachment-transfer/status.md`, add a resolved-status table beneath the audit findings with each prior finding mapped to its implemented correction and test file.
 
-In `docs/CHECKLIST.md`, add checked scenarios for:
+In `docs/project/CHECKLIST.md`, add checked scenarios for:
 
 ```markdown
 - [x] Load-time local/server mismatch requires an explicit writable-user choice.
@@ -1480,7 +1480,7 @@ Expected: no whitespace errors; changes are limited to the files listed in this 
 - [ ] **Step 7: Commit verification documentation**
 
 ```powershell
-git add -- "docs/ATTACHMENT_FILE_TRANSFER_STATUS.md" "docs/CHECKLIST.md" "docs/superpowers/specs/2026-08-31-local-draft-recovery-conflict-design.md"
+git add -- "docs/features/attachment-transfer/status.md" "docs/project/CHECKLIST.md" "docs/features/local-draft-recovery/design.md"
 git commit -m "docs: verify local draft conflict recovery"
 ```
 

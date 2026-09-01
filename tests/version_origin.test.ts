@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { getDb, resetDb, initializeSchema } from "@/lib/db";
 import { resetConfig } from "@/lib/config";
 import { createUser } from "@/lib/users";
+import { acquireEditLease } from "@/lib/edit_lease";
 import { createDocument, getDocumentRaw } from "@/lib/documents";
 import {
   createSnapshotFromScene,
@@ -22,6 +23,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+
+
+function leaseFor(docId: string, userId: string) {
+  const r = acquireEditLease({ docId, userId, role: "USER", adminMode: false, clientId: "c-test", leaseToken: "t-test-" + userId.slice(0,8) });
+  if (r.state !== "acquired") throw new Error("lease acquire failed");
+  return { clientId: "c-test", leaseToken: "t-test-" + userId.slice(0,8), generation: r.generation };
+}
 
 describe("Version origin labels", () => {
   beforeEach(() => {
@@ -175,7 +183,7 @@ describe("Version origin labels", () => {
     getDb().prepare("UPDATE documents SET scene = ?, updated_at = ? WHERE id = ?").run(sceneToJson(autoScene), new Date().toISOString(), doc.id);
 
     const snap = afterAuto[1]; // manual_save snapshot (empty)
-    restoreVersion(doc.id, snap.id, user.id, "USER", false);
+    restoreVersion(doc.id, snap.id, user.id, "USER", false, leaseFor(doc.id, user.id));
     const afterRestore = listVersions(doc.id);
     expect(afterRestore[0].origin).toBe("restore");
     // New snapshot should be of pre-restore auto, not the restored empty
@@ -197,7 +205,7 @@ describe("Version origin labels", () => {
       preserveDiscarded: true,
       expectedServerUpdatedAt: doc1.updated_at,
       clientScene,
-    });
+    }, leaseFor(doc1.id, user.id));
     expect(listVersions(doc1.id)[0].origin).toBe("recovery_server_version");
 
     // When choosing server, discarded client is snapshotted
@@ -207,7 +215,7 @@ describe("Version origin labels", () => {
       preserveDiscarded: true,
       expectedServerUpdatedAt: doc2.updated_at,
       clientScene,
-    });
+    }, leaseFor(doc2.id, user.id));
     expect(listVersions(doc2.id)[0].origin).toBe("recovery_client_draft");
   });
 
@@ -219,7 +227,7 @@ describe("Version origin labels", () => {
       preserveDiscarded: false,
       expectedServerUpdatedAt: doc.updated_at,
       clientScene: emptyScene(),
-    });
+    }, leaseFor(doc.id, user.id));
     expect(listVersions(doc.id)).toHaveLength(0);
   });
 
@@ -247,7 +255,7 @@ describe("Version origin labels", () => {
     const req = new Request(`http://localhost/api/documents/${doc.id}/save`, {
       method: "POST",
       headers: { "Content-Type": "application/json", cookie: `${SESSION_COOKIE}=${session.token}` },
-      body: JSON.stringify({ scene: emptyScene() }),
+      body: JSON.stringify({ scene: emptyScene(), lease: leaseFor(doc.id, user.id) }),
     });
     const res = await postManualSave(req as unknown as Request, { params: Promise.resolve({ id: doc.id }) } as any);
     expect(res.status).toBe(200);
@@ -262,7 +270,7 @@ describe("Version origin labels", () => {
     const req = new Request(`http://localhost/api/documents/${doc.id}/scene`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", cookie: `${SESSION_COOKIE}=${session.token}` },
-      body: JSON.stringify({ scene: emptyScene(), snapshot: true }),
+      body: JSON.stringify({ scene: emptyScene(), snapshot: true, lease: leaseFor(doc.id, user.id) }),
     });
     const res = await putAutoSave(req as unknown as Request, { params: Promise.resolve({ id: doc.id }) } as any);
     expect(res.status).toBe(200);

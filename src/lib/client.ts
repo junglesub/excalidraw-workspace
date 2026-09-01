@@ -5,6 +5,21 @@
  * (the session cookie) automatically and surface API error messages.
  */
 
+export class ApiError extends Error {
+  constructor(public status: number, message: string, public code?: string) {
+    super(message);
+  }
+}
+
+function parseErrorData(data: unknown, status: number): { message: string; code?: string } {
+  if (data && typeof data === "object" && "error" in data) {
+    const msg = String((data as { error: unknown }).error);
+    const code = "code" in data && typeof (data as { code: unknown }).code === "string" ? String((data as { code: unknown }).code) : undefined;
+    return { message: msg, code };
+  }
+  return { message: `Request failed (${status})` };
+}
+
 export async function api<T = unknown>(
   url: string,
   options: RequestInit = {},
@@ -25,11 +40,8 @@ export async function api<T = unknown>(
     data = text;
   }
   if (!res.ok) {
-    const msg =
-      data && typeof data === "object" && "error" in data
-        ? String((data as { error: unknown }).error)
-        : `Request failed (${res.status})`;
-    throw new Error(msg);
+    const { message, code } = parseErrorData(data, res.status);
+    throw new ApiError(res.status, message, code);
   }
   return data as T;
 }
@@ -48,11 +60,8 @@ export function apiForm<T>(url: string, form: FormData): Promise<T> {
       data = text;
     }
     if (!res.ok) {
-      const msg =
-        data && typeof data === "object" && "error" in data
-          ? String((data as { error: unknown }).error)
-          : `Request failed (${res.status})`;
-      throw new Error(msg);
+      const { message, code } = parseErrorData(data, res.status);
+      throw new ApiError(res.status, message, code);
     }
     return data as T;
   });

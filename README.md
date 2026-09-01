@@ -9,8 +9,16 @@ It provides full document management, version history snapshots, user access con
 ## ✨ Features
 
 - 🎨 **Full Excalidraw Integration** (`@excalidraw/excalidraw` 0.18.1): Drawing, shapes, text, handwriting, light/dark themes, canvas zoom/pan, and flowchart nodes via `Ctrl`/`Cmd`+arrow. Tab-to-cycle node type is not in this package version.
+- 🔒 **Single-Editor Lease (One Canvas Editor Per Document)**:
+  - Exactly one active canvas editor per document across users, browsers, devices, and tabs.
+  - Lease acquisition before editable canvas mount; blocking conflict modal offers `Open read-only` and `Take over editing`.
+  - 2-second heartbeat, 90-second lease expiry, 1-second takeover polling, forced takeover at 10 seconds.
+  - Graceful handover flushes old editor, uploads attachments, and saves without forced snapshot; forced takeover advances fencing generation.
+  - Server-side token + generation fencing in same SQLite transaction for auto-save, manual save, recovery, and history restore; stale writes rejected with `EDIT_LEASE_LOST`.
+  - VIEWER and deleted-document views are server-only/read-only, never touch localStorage or leases.
+  - Old editor becomes read-only and retains unconfirmed local draft; new editor reloads latest server scene before draft resolution. Title rename, sharing, permission, attachment upload, import, Trash, and restore from Trash remain outside the lease. No WebSocket/SSE/Redis/CRDT.
 - 💾 **Robust Auto-Save & Crash Recovery**:
-  - 3-second debounced server auto-saving.
+  - 3-second debounced server auto-saving (fenced by lease when active).
   - Browser `localStorage` drafts: compact metadata for images already on the server; inline `dataURL` only for files not yet uploaded.
   - Page unload (`beforeunload`) keepalive flush of a compact scene (no image Base64).
   - `Ctrl + S` / `Cmd + S` shortcut for instant server commit and snapshot creation.
@@ -132,11 +140,11 @@ npm run build
 ## 📚 Documentation
 
 Detailed implementation guides and verification checklists are available in the [`docs/`](docs/) directory:
-- [Implementation Plan](docs/implement_plan.md)
-- [Verification Checklist](docs/CHECKLIST.md)
-- [Attachment Transfer Status](docs/ATTACHMENT_FILE_TRANSFER_STATUS.md)
-- [Attachment Transfer Design](docs/superpowers/specs/2026-08-27-direct-attachment-transfer-design.md)
-- [Future Roadmap & Follow-up](docs/TODO_FOLLOWUP.md)
+- [Implementation Plan](docs/project/implement_plan.md)
+- [Verification Checklist](docs/project/CHECKLIST.md)
+- [Attachment Transfer Status](docs/features/attachment-transfer/status.md)
+- [Attachment Transfer Design](docs/features/attachment-transfer/design.md)
+- [Future Roadmap & Follow-up](docs/project/TODO_FOLLOWUP.md)
 
 ---
 

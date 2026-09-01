@@ -2,6 +2,7 @@ import { handleError, json, jsonError, readJson, requireUser, adminModeFrom } fr
 import { jsonToScene } from "@/lib/types";
 import { handleManualSave } from "@/lib/versions";
 import { decodePngDataURL } from "@/lib/thumbnails";
+import { parseAndValidateLeaseCredentials } from "@/lib/edit_lease";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,11 @@ export async function POST(req: Request, { params }: Ctx) {
     }
     const scene = jsonToScene(JSON.stringify(body.scene));
     const thumbBuf = decodePngDataURL(body.thumbnailBase64);
-    const result = handleManualSave(id, user.id, user.role, adminMode, scene, thumbBuf);
+    const leaseCreds = parseAndValidateLeaseCredentials((body as Record<string, unknown>).lease as Record<string, unknown>);
+    if (!leaseCreds) {
+      return jsonError("lease credentials are required", 400);
+    }
+    const result = handleManualSave(id, user.id, user.role, adminMode, scene, thumbBuf, leaseCreds);
     return json({
       ok: true,
       alreadySaved: result.alreadySaved,

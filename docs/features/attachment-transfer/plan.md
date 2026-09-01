@@ -4,7 +4,7 @@
 - **Goal:** Replace server-side Base64 JSON parsing with direct binary attachment transfer, in-memory client hydration via Excalidraw's imperative API, pre-upload on save, and two-tier admin storage GC.
 - **Architecture:** Client uploads new image binaries directly via multipart/binary endpoints before submitting compact JSON scene payloads. On load, client fetches raw binaries and hydrates them into Excalidraw runtime memory only. Two-tier GC handles immediate post-save cleanup (Tier 1) and 24-hour grace-period unreferenced DB row cleanup (Tier 2). Export remains the sole server-side hydration path.
 - **Tech Stack:** Next.js 15 App Router, React 18, `@excalidraw/excalidraw` 0.18.1, Node.js SQLite (`node:sqlite`), TypeScript, Vitest.
-- **Spec Reference:** `docs/superpowers/specs/2026-08-27-direct-attachment-transfer-design.md`
+- **Spec Reference:** `docs/features/attachment-transfer/design.md`
 - **Global Constraints:**
   - Zero Base64 `dataURL` over steady-state document JSON APIs (`/api/documents/[id]`, `/api/documents/[id]/save`, `/api/documents/[id]/scene`, `/api/share/[token]`).
   - No saving a compact scene referencing an unpersisted attachment file ID.

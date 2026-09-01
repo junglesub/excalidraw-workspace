@@ -1,8 +1,8 @@
 import { handleError, json, jsonError, readJson, requireUser, adminModeFrom } from "@/lib/http";
-import { updateScene, getDocumentRaw } from "@/lib/documents";
 import { jsonToScene } from "@/lib/types";
-import { createSnapshotFromScene, snapshotDueForAutoSave, AUTO_INTERVAL } from "@/lib/versions";
+import { handleAutoSave } from "@/lib/versions";
 import { decodePngDataURL } from "@/lib/thumbnails";
+import { parseAndValidateLeaseCredentials } from "@/lib/edit_lease";
 
 export const dynamic = "force-dynamic";
 
@@ -27,15 +27,13 @@ export async function PUT(req: Request, { params }: Ctx) {
     }
     const scene = jsonToScene(JSON.stringify(body.scene));
     const thumbBuf = decodePngDataURL(body.thumbnailBase64);
-    updateScene(id, scene, user.id, user.role, adminMode, { thumbnailBuffer: thumbBuf });
-
-    let snapshotCreated = false;
-    const wantSnapshot = body.snapshot === true;
-    if (wantSnapshot && snapshotDueForAutoSave(id, AUTO_INTERVAL)) {
-      createSnapshotFromScene(id, scene, user.id, true, thumbBuf, { origin: "auto_snapshot" });
-      snapshotCreated = true;
+    const leaseCreds = parseAndValidateLeaseCredentials((body as Record<string, unknown>).lease as Record<string, unknown>);
+    if (!leaseCreds) {
+      return jsonError("lease credentials are required", 400);
     }
-    return json({ ok: true, snapshotCreated, updatedAt: getDocumentRaw(id)!.updated_at });
+    const wantSnapshot = body.snapshot === true;
+    const result = handleAutoSave(id, user.id, user.role, adminMode, scene, thumbBuf, wantSnapshot, leaseCreds);
+    return json({ ok: true, snapshotCreated: result.snapshotCreated, updatedAt: result.updatedAt });
   } catch (err) {
     return handleError(err);
   }

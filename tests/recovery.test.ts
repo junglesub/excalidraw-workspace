@@ -6,7 +6,15 @@ import { addMember, createDocument, getDocumentRaw } from "@/lib/documents";
 import { SESSION_COOKIE } from "@/lib/http";
 import { emptyScene, jsonToScene, sceneToJson } from "@/lib/types";
 import { createSession, createUser } from "@/lib/users";
+import { acquireEditLease } from "@/lib/edit_lease";
 import { listVersions } from "@/lib/versions";
+
+
+function leaseFor(docId: string, userId: string) {
+  const r = acquireEditLease({ docId, userId, role: "USER", adminMode: false, clientId: "c-test", leaseToken: "t-test-" + userId.slice(0,8) });
+  if (r.state !== "acquired") throw new Error("lease acquire failed");
+  return { clientId: "c-test", leaseToken: "t-test-" + userId.slice(0,8), generation: r.generation };
+}
 
 describe("Recovery conflict API", () => {
   beforeEach(() => {
@@ -39,6 +47,7 @@ describe("Recovery conflict API", () => {
         expectedServerUpdatedAt: doc.updated_at,
         clientScene: client,
         clientUpdatedAt: 123,
+        lease: leaseFor(doc.id, owner.id),
       }),
       { params: Promise.resolve({ id: doc.id }) },
     );
@@ -67,6 +76,7 @@ describe("Recovery conflict API", () => {
         expectedServerUpdatedAt: doc.updated_at,
         clientScene: emptyScene(),
         clientUpdatedAt: 123,
+        lease: { clientId: "c-viewer", leaseToken: "t-viewer", generation: 1 },
       }),
       { params: Promise.resolve({ id: doc.id }) },
     );
@@ -86,6 +96,7 @@ describe("Recovery conflict API", () => {
         expectedServerUpdatedAt: doc.updated_at,
         clientScene: emptyScene(),
         clientUpdatedAt: 123,
+        lease: leaseFor(doc.id, owner.id),
       }),
       { params: Promise.resolve({ id: doc.id }) },
     );
@@ -108,6 +119,7 @@ describe("Recovery conflict API", () => {
         expectedServerUpdatedAt: doc.updated_at,
         clientScene: { ...emptyScene(), elements: [{ id: "client", type: "ellipse" }] },
         clientUpdatedAt: 123,
+        lease: leaseFor(doc.id, owner.id),
       }),
       { params: Promise.resolve({ id: doc.id }) },
     );

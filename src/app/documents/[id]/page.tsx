@@ -9,18 +9,22 @@ export const dynamic = "force-dynamic";
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  searchParams?: Promise<{ adminMode?: string }>;
 }
 
-export default async function DocumentPage({ params }: PageProps) {
+export default async function DocumentPage({ params, searchParams }: PageProps) {
   const { id } = await params;
+  const sp = searchParams ? await searchParams : {};
+  const adminMode = sp?.adminMode === "1";
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE)?.value;
   if (!token) redirect("/login");
   const user = getUserBySessionToken(token);
   if (!user) redirect("/login");
 
-  const { doc, scene } = getDocumentWithScene(id, user.id, user.role, false, { hydrate: false });
-  const meta = documentToMeta(getDocumentRaw(id)!, user.id, user.role, false);
+  const effectiveAdminMode = adminMode && user.role === "ADMIN";
+  const { doc, scene } = getDocumentWithScene(id, user.id, user.role, effectiveAdminMode, { hydrate: false });
+  const meta = documentToMeta(getDocumentRaw(id)!, user.id, user.role, effectiveAdminMode);
 
   return (
     <EditorClient
@@ -31,6 +35,7 @@ export default async function DocumentPage({ params }: PageProps) {
       initialUpdatedAt={meta.updated_at}
       permission={meta.permission}
       deleted={!!doc.deleted_at}
+      adminMode={effectiveAdminMode}
     />
   );
 }

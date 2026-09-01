@@ -1,4 +1,4 @@
-﻿# Private Excalidraw Workspace Implementation & Verification Checklist
+# Private Excalidraw Workspace Implementation & Verification Checklist
 
 Step-by-step implementation and quality verification checklist based on the `implement_plan.md` requirements and the 20 success criteria (Section 28).
 
@@ -216,3 +216,43 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] `restoreVersion` captures current scene and its thumbnail before replacement, snapshots that pre-restore state with `origin="restore"`, then applies selected version's scene as current and updates `documents.thumbnail_path` from restored version's thumbnail
 - [x] No new snapshot of selected/restored target is created; preserves authorization, `compactSceneFiles` validation, atomic rollback, snapshot cap/GC, thumbnail safety
 - [x] Focused TDD: `tests/versions.test.ts` and `tests/version_origin.test.ts` prove `v2` current → restore `v1` yields new snapshot of `v2` (not `v1`), document current `v1`, origin `restore`; full suite 126 tests, `npm run typecheck` clean
+
+---
+
+## 16. Document-Scoped Single-Editor Lease (2026-09-01)
+
+- [x] SQLite `document_edit_leases` table (generation retained after release, takeover fields cleared atomically, `CREATE TABLE IF NOT EXISTS` migration)
+- [x] Server state machine: `acquire`, `heartbeat` (2s), `request_takeover`, `poll_takeover` (1s), `release`, `assertActiveEditLease` with 90s expiry, 10s forced takeover, generation fencing, safe holder summaries (no token leakage)
+- [x] Single lease API `POST /api/documents/[id]/lease` with 5 actions, bounded validation, stable codes `EDIT_LEASE_HELD`/`TAKEOVER_IN_PROGRESS`/`EDIT_LEASE_LOST`
+- [x] Atomic fencing of `handleAutoSave`, `handleManualSave`, `resolveRecoveryConflict`, `restoreVersion` in same `BEGIN IMMEDIATE` transaction as write
+- [x] Client transport: per-context `window.name` id (`getEditorContextId`), stored prior-credential helpers keyed by `{docId}:{contextId}` (`read/store/clearStoredLeaseCredentials`), `acquireLease`/`heartbeatLease`/`requestTakeover`/`pollTakeover`/`releaseLease`, `ApiError` with status/code, credentials in save/recovery payloads
+- [x] Accessible `EditLeaseConflictModal` (role dialog, aria-modal, `already being edited`, `Open read-only`/`Take over editing`, busy disabled, error alert, no token leakage)
+- [x] Editor load gate: writable users acquire before canvas mount or localStorage; VIEWER/deleted never touch localStorage or leases
+- [x] Graceful handover: freeze canvas, cancel debounce, upload attachments, normal non-snapshot save, release/transfer, reload server scene, become read-only; forced takeover advances generation after 10s
+- [x] Centralized `EDIT_LEASE_LOST` handling (cancel timers, retain draft, fetch latest scene, read-only banner), pagehide best-effort release via `sendBeacon`/`keepalive`
+- [x] Title rename, sharing/permission, attachment upload, import, Trash, restore from Trash remain outside lease; no WebSocket/SSE/Redis/CRDT/queue/deps
+- [x] Focused TDD: `tests/edit_lease.test.ts`, `tests/edit_lease_route.test.ts`, `tests/edit_lease_fencing.test.ts`, `tests/client_edit_lease.test.ts`, `tests/edit_lease_modal.test.ts`, updated `tests/versions.test.ts`/`tests/version_origin.test.ts`/`tests/recovery.test.ts`/`tests/export_import.test.ts`/`tests/client_save_pipeline.test.ts`; full suite 155 tests, `npm run typecheck` clean
+- [ ] Browser manual verification (two writable users/tabs: conflict modal, Open read-only stays read-only and never touches draft, Take over graceful flush and read-only, forced takeover after 10s, stale tab cannot save, draft retained after loss, new editor reloads server scene before draft, VIEWER never sees modal or touches draft, deleted view read-only, title/share still work outside lease) — automated tests pass; manual browser scenarios not yet executed in this environment
+
+---
+
+## 17. Lease Stabilization (2026-09-01)
+
+- [x] Restore serialized via save pipeline (freeze mutation via isRestoringRef, cancel debounce, waitForNoSaving, GET after success, only clear draft after success, finally recover)
+- [x] Cancelled initial acquire and normal SPA unmount best-effort release once without React state mutation (sendBeacon/keepalive, no setState after unmount)
+- [x] Single-flight takeover polling (takeoverPollInFlightRef guard, all results/errors settled, no interval overlap)
+- [x] Thrown acquire 409 and latest-GET failure render safe readonly SSR scene with visible accessible error and existing retry button; no localStorage/edit until new acquire+GET
+- [x] pollEditTakeover expiry fix: expired holder returns EDIT_LEASE_LOST instead of acquired
+- [x] AdminMode: valid ADMIN + adminMode true => writable EDITOR meta + normal lease acquisition (fixed documentToMeta admin->VIEWER bug), propagated from page searchParams through EditorClient URLs, lease and fenced mutations
+- [x] Client regressions replaced with production-connected tests (lease_stabilization_regressions, handoff serialization) rather than copied constants
+- [x] Lifecycle cleanup completed for that stabilization pass; full suite 169 tests, typecheck 0, git diff --check 078659a..HEAD 0
+
+## 18. Re-entry False-Conflict Fix (2026-09-01)
+
+- [x] Root cause: the lease `clientId` survived reload/navigation while each page instance generates a fresh lease token, so the server's exact-credential idempotent-acquire branch missed a same-tab reload (new token), which fell through to the held/conflict gate even with a fresh heartbeat — "already being edited" with no other editor
+- [x] Platform evidence: MDN Window.name — the browsing-context name survives same-tab reloads and same-origin navigations, is reset on cross-domain loads, and is NOT inherited by newly opened editor contexts (a `window.open`/target target starts unnamed; the editor never assigns opener names). `window.name` is a non-secret, per-browsing-context id (never a token/credential). MDN sessionStorage notes opener-created pages get a copy of the opener's storage, so stored data alone cannot identify a context
+- [x] Fix: the client id is the per-context `window.name` id (`getEditorContextId`). The client persists the previous SERVER-ISSUED lease credentials (token + generation) in `sessionStorage` keyed by `{docId}:{contextId}` (`storeLeaseCredentials`). On acquire it sends the fresh candidate token plus the prior credentials. `acquireEditLease` rotates/generates a new lease only when the active holder exactly matches user + clientId + prior token + prior generation (`credentialedSameContextReentry`). There is no boolean bypass
+- [x] Safety: rotation advances generation and uses a fresh token, fencing the previous page instance's late heartbeat/release. A copied-storage/new context has its own `window.name` id, so it cannot present valid prior credentials for the active holder's clientId and stays held/takeover. Pending takeover is never clobbered; stale-heartbeat recovery is preserved
+- [x] Regressions: `tests/reentry_lease.test.ts` (8: exact-prior rotation with stale-op fencing, copied-storage/different-context rejection, stale prior token rejected, second context held, different user held, stale-clientId recovery, pending takeover not clobbered, expired acquire), `tests/edit_lease.test.ts` (credential-proven re-acquire + different-context conflict), `tests/edit_lease_route.test.ts` (prior-credential flow + malformed-pair 400), `tests/client_edit_lease.test.ts` (context-id parser/generator, storage key/read/write/clear helpers, prior-credential payload, compare-and-clear regression)
+- [x] Strict Mode false-conflict fix: initial lease effect uses `InitialLeaseCoordinator` (`src/lib/client_edit_lease.ts`) constructed and subscribed strictly within committed `useEffect` lifecycles (pure render). Cryptographically secure token generation required (no weak Math.random fallback); deliverSettled immediately services late subscribers; clean resubscribe after release; lifecycle epoch guard (`initialLeaseEpochRef`) fences stale async finalizations across unmount/navigation; genuine unmount before resolution or after finalization releases cleanly once; scoped and transitioned per `docId`. Production-connected tests at `tests/initial_acquire_strict.test.ts` (9 tests). Preserves credential-proven reload, same-user stale-context recovery, generation fencing, compare-and-clear, takeover, VIEWER/admin/recovery.
+- [x] Validation (2026-09-01): focused lease tests pass (reentry 8, edit_lease 16, edit_lease_route 7, client_edit_lease 13, initial_acquire_strict 9); full `npm test` 195 tests across 23 files all pass, `npm run typecheck` clean, `git diff --check 078659a..HEAD` 0

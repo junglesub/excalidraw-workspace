@@ -6,9 +6,11 @@ export const MAX_JSON_BODY_BYTES = 25 * 1024 * 1024; // 25 MB bounded guard for 
 
 export class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -81,6 +83,9 @@ export function jsonError(message: string, status = 400): Response {
 
 export function handleError(err: unknown): Response {
   if (err instanceof HttpError) {
+    if (err.code) {
+      return json({ error: err.message, code: err.code }, err.status);
+    }
     return jsonError(err.message, err.status);
   }
   console.error("[api] unhandled error", err);

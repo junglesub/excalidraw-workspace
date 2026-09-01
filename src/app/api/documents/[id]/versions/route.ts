@@ -1,6 +1,7 @@
-import { handleError, json, requireUser, adminModeFrom } from "@/lib/http";
+import { handleError, json, jsonError, readJson, requireUser, adminModeFrom } from "@/lib/http";
 import { listVersions } from "@/lib/versions";
 import { getDocumentRaw, requireRead } from "@/lib/documents";
+import { parseAndValidateLeaseCredentials } from "@/lib/edit_lease";
 
 interface Ctx {
   params: Promise<{ id: string }>;
@@ -31,8 +32,13 @@ export async function POST(req: Request, { params }: Ctx) {
     if (url.searchParams.get("action") !== "restore" || !versionId) {
       return json({ error: "versionId is required" }, 400);
     }
+    const body = await readJson(req).catch(() => ({} as Record<string, unknown>));
+    const leaseCreds = parseAndValidateLeaseCredentials((body as Record<string, unknown>).lease as Record<string, unknown>);
+    if (!leaseCreds) {
+      return jsonError("lease credentials are required", 400);
+    }
     const { restoreVersion } = await import("@/lib/versions");
-    const snapshot = restoreVersion(id, versionId, user.id, user.role, adminMode);
+    const snapshot = restoreVersion(id, versionId, user.id, user.role, adminMode, leaseCreds);
     return json({ ok: true, snapshot, versions: listVersions(id) });
   } catch (err) {
     return handleError(err);

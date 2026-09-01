@@ -130,7 +130,7 @@ function toMeta(
     title: doc.title,
     owner_id: doc.owner_id,
     owner_username: owner?.username || "deleted",
-    permission: perm && perm !== "admin" ? perm : "VIEWER",
+    permission: perm === "admin" ? "EDITOR" : (perm as Permission) || "VIEWER",
     thumbnail_path: thumbPath,
     created_at: doc.created_at,
     updated_at: doc.updated_at,

@@ -3,6 +3,18 @@
 export type Role = "USER" | "ADMIN";
 export type Permission = "OWNER" | "EDITOR" | "VIEWER";
 
+export interface EditLeaseCredentials {
+  clientId: string;
+  leaseToken: string;
+  generation: number;
+}
+
+export interface LeaseHolderSummary {
+  username: string;
+  acquiredAt: string;
+  heartbeatAt: string;
+}
+
 export interface UserRow {
   id: string;
   username: string;

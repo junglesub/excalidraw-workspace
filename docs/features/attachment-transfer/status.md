@@ -88,7 +88,7 @@ Do not pass compact files (missing `dataURL`) into Excalidraw `initialData`. `ad
 
 Existing tests cover compact image metadata, in-flight save comparison, and hydration-only comparison. They do not exercise the mount-time localStorage restore effect or the edge cases above.
 
-The approved replacement behavior is specified in [Local Draft Recovery Conflict Design](superpowers/specs/2026-08-31-local-draft-recovery-conflict-design.md).
+The approved replacement behavior is specified in [Local Draft Recovery Conflict Design](../local-draft-recovery/design.md).
 
 ### Resolved findings (2026-08-31 local draft recovery)
 
@@ -101,7 +101,7 @@ The approved replacement behavior is specified in [Local Draft Recovery Conflict
 | Restored drafts not explicitly dirty/queued | Selecting client draft replaces server scene atomically via `resolveRecoveryConflict` and mounts selected scene immediately | `tests/versions.test.ts`, `tests/recovery.test.ts` |
 | Invalid and legacy drafts remain indefinitely | `decideDraftAtLoad` returns `malformed` without deleting raw value; warning shown, server scene mounted | `tests/client_save_pipeline.test.ts` |
 
-Verification: `npm test` (126 tests) and `npm run typecheck` pass. Browser manual scenarios outstanding (see CHECKLIST).
+Verification: `npm test` (126 tests) and `npm run typecheck` pass. Browser manual scenarios outstanding (see `../../project/CHECKLIST.md`).
 
 ---
 

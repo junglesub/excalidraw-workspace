@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { resetDb, getDb } from "@/lib/db";
 import { resetConfig, config } from "@/lib/config";
 import { createUser, createSession } from "@/lib/users";
+import { acquireEditLease } from "@/lib/edit_lease";
 import { SESSION_COOKIE } from "@/lib/http";
 import { createDocument, updateScene, getDocumentWithScene, getDocumentRaw } from "@/lib/documents";
 import { createSnapshotFromScene } from "@/lib/versions";
@@ -28,6 +29,13 @@ import type { ExcalidrawScene } from "@/lib/types";
 import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { renderScenePng } from "@/lib/thumbnails";
+
+
+function leaseFor(docId: string, userId: string) {
+  const r = acquireEditLease({ docId, userId, role: "USER", adminMode: false, clientId: "c-test", leaseToken: "t-test-" + userId.slice(0,8) });
+  if (r.state !== "acquired") throw new Error("lease acquire failed");
+  return { clientId: "c-test", leaseToken: "t-test-" + userId.slice(0,8), generation: r.generation };
+}
 
 describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () => {
   beforeEach(() => {
@@ -628,7 +636,7 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
         "Content-Type": "application/json",
         cookie: `${SESSION_COOKIE}=${session.token}`,
       },
-      body: JSON.stringify({ scene: dirtyScene }),
+      body: JSON.stringify({ scene: dirtyScene, lease: leaseFor(doc.id, user.id) }),
     });
     const saveRes = await postSaveRoute(saveReq, { params: Promise.resolve({ id: doc.id }) });
     expect(saveRes.status).toBe(400);
@@ -640,7 +648,7 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
         "Content-Type": "application/json",
         cookie: `${SESSION_COOKIE}=${session.token}`,
       },
-      body: JSON.stringify({ scene: dirtyScene }),
+      body: JSON.stringify({ scene: dirtyScene, lease: leaseFor(doc.id, user.id) }),
     });
     const sceneRes = await putSceneRoute(sceneReq, { params: Promise.resolve({ id: doc.id }) });
     expect(sceneRes.status).toBe(400);
@@ -664,6 +672,7 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
       body: JSON.stringify({
         scene: { ...emptyScene(), elements: [{ id: "rect-1", type: "rectangle" }] },
         thumbnailBase64,
+        lease: leaseFor(doc.id, user.id),
       }),
     });
     const saveRes = await postSaveRoute(saveReq, { params: Promise.resolve({ id: doc.id }) });
@@ -691,7 +700,7 @@ describe("Attachments, Export/Import, and Compact/Hydrate Scene Pipeline", () =>
         "Content-Type": "application/json",
         cookie: `${SESSION_COOKIE}=${session.token}`,
       },
-      body: JSON.stringify({ scene: cleanScene }), // thumbnailBase64 completely omitted
+      body: JSON.stringify({ scene: cleanScene, lease: leaseFor(doc.id, user.id) }), // thumbnailBase64 completely omitted
     });
     const saveRes = await postSaveRoute(saveReq, { params: Promise.resolve({ id: doc.id }) });
     expect(saveRes.status).toBe(200);

@@ -346,7 +346,7 @@ Old snapshots exceeding the most recent 20 are pruned.
 
 Users can inspect past states in the version history view and restore them.
 
-Restoring an earlier version is itself committed as a new current state snapshot.
+Before restoring an earlier version, the current state is committed as a snapshot. The selected historical version then becomes the current state.
 
 ---
 
@@ -596,7 +596,7 @@ Enable EDITOR permissions.
 
 Allow users to grant edit permissions to other users.
 
-Support sequential editing with optimistic concurrency control.
+Support sequential editing with a document-scoped single-editor lease, graceful takeover, and stale-write fencing. See [Document-Scoped Single-Editor Lease Requirements and Design](../features/document-edit-lease/design.md).
 
 ### Phase 3
 
@@ -606,6 +606,7 @@ Integrate Excalidraw collaboration infrastructure or compatible room servers for
 - Multi-user scene synchronization
 - Collaborative editing & conflict resolution
 - Presence
+
 
 ---
 

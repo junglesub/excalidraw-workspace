@@ -44,6 +44,7 @@ export function closeDb(): void {
 export function resetDb(): DatabaseSync {
   const database = getDb();
   try {
+    database.exec("DELETE FROM document_edit_leases;");
     database.exec("DELETE FROM document_versions;");
     database.exec("DELETE FROM document_members;");
     database.exec("DELETE FROM share_links;");
@@ -154,6 +155,23 @@ CREATE TABLE IF NOT EXISTS share_links (
   created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_share_links_token ON share_links(token);
+
+CREATE TABLE IF NOT EXISTS document_edit_leases (
+  document_id             TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+  holder_user_id          TEXT REFERENCES users(id) ON DELETE SET NULL,
+  holder_client_id        TEXT,
+  lease_token             TEXT,
+  generation              INTEGER NOT NULL,
+  acquired_at             TEXT,
+  heartbeat_at            TEXT,
+  expires_at              TEXT,
+  takeover_request_id     TEXT,
+  takeover_user_id        TEXT REFERENCES users(id) ON DELETE SET NULL,
+  takeover_client_id      TEXT,
+  takeover_lease_token    TEXT,
+  takeover_requested_at   TEXT,
+  takeover_deadline_at    TEXT
+);
 `;
 
 export function initializeSchema(database: DatabaseSync): void {
