@@ -233,3 +233,16 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] Title rename, sharing/permission, attachment upload, import, Trash, restore from Trash remain outside lease; no WebSocket/SSE/Redis/CRDT/queue/deps
 - [x] Focused TDD: `tests/edit_lease.test.ts`, `tests/edit_lease_route.test.ts`, `tests/edit_lease_fencing.test.ts`, `tests/client_edit_lease.test.ts`, `tests/edit_lease_modal.test.ts`, updated `tests/versions.test.ts`/`tests/version_origin.test.ts`/`tests/recovery.test.ts`/`tests/export_import.test.ts`/`tests/client_save_pipeline.test.ts`; full suite 155 tests, `npm run typecheck` clean
 - [ ] Browser manual verification (two writable users/tabs: conflict modal, Open read-only stays read-only and never touches draft, Take over graceful flush and read-only, forced takeover after 10s, stale tab cannot save, draft retained after loss, new editor reloads server scene before draft, VIEWER never sees modal or touches draft, deleted view read-only, title/share still work outside lease) — automated tests pass; manual browser scenarios not yet executed in this environment
+
+---
+
+## 17. Lease Stabilization (2026-09-01)
+
+- [x] Restore serialized via save pipeline (freeze mutation via isRestoringRef, cancel debounce, waitForNoSaving, GET after success, only clear draft after success, finally recover)
+- [x] Cancelled initial acquire and normal SPA unmount best-effort release once without React state mutation (sendBeacon/keepalive, no setState after unmount)
+- [x] Single-flight takeover polling (takeoverPollInFlightRef guard, all results/errors settled, no interval overlap)
+- [x] Thrown acquire 409 and latest-GET failure render safe readonly SSR scene with visible accessible error and existing retry button; no localStorage/edit until new acquire+GET
+- [x] pollEditTakeover expiry fix: expired holder returns EDIT_LEASE_LOST instead of acquired
+- [x] AdminMode propagated from page searchParams through EditorClient URLs, lease and fenced mutations (page, withAdminMode helper, client_save adminMode query)
+- [x] Client regressions replaced with production-connected tests (lease_stabilization_regressions, handoff serialization) rather than copied constants
+- [x] Clean hook deps, dead refs/casts/EOF; full suite 163 tests, typecheck 0
