@@ -19,7 +19,7 @@ import {
   sceneMatchesLastSaved,
   getManualSaveStatus,
 } from "@/lib/client_save";
-import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, waitForNoSaving, shouldRecoverHandoffToActive } from "@/lib/client_edit_lease";
+import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, waitForNoSaving, shouldRecoverHandoffToActive, credentialKey, dispatchRelease } from "@/lib/client_edit_lease";
 import type { EditorLeaseMode } from "@/lib/client_edit_lease";
 import type { EditLeaseCredentials, ExcalidrawScene, Permission, LeaseHolderSummary } from "@/lib/types";
 import type { LocalDraftEnvelope } from "@/lib/client_save";
@@ -112,18 +112,10 @@ export default function EditorClient({
   const hasReleasedRef = useRef<Set<string>>(new Set());
   const bestEffortReleaseOnce = (creds: { clientId: string; leaseToken: string; generation: number } | null) => {
     if (!creds) return;
-    const key = `${creds.clientId}:${creds.leaseToken}:${creds.generation}`;
-    if (hasReleasedRef.current.has(key)) return;
-    hasReleasedRef.current.add(key);
+    const key = credentialKey(creds as EditLeaseCredentials);
     const url = withAdminMode(`/api/documents/${encodeURIComponent(docId)}/lease`);
     const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
-    try {
-      if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-        navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
-      } else {
-        fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, credentials: "include", keepalive: true } as RequestInit);
-      }
-    } catch {}
+    dispatchRelease(url, payload, hasReleasedRef.current, key);
   };
   // lease mode state
   const [leaseMode, setLeaseMode] = useState<"viewer" | "acquiring" | "blocked" | "active" | "handoff" | "readonly" | "lost">(

@@ -152,5 +152,27 @@ export function shouldRecoverHandoffToActive(currentMode: EditorLeaseMode, heart
 }
 
 export function credentialKey(creds: EditLeaseCredentials): string {
-  return `${creds.clientId}:${creds.leaseToken}:${creds.generation}`;
+  return JSON.stringify([creds.clientId, creds.leaseToken, creds.generation]);
+}
+
+export function dispatchRelease(url: string, payload: string, released: Set<string>, key: string): boolean {
+  if (released.has(key)) return false;
+  let dispatched = false;
+  try {
+    if (typeof navigator !== "undefined" && typeof (navigator as unknown as { sendBeacon?: (url: string, data: Blob) => boolean }).sendBeacon === "function") {
+      try {
+        const ok = (navigator as unknown as { sendBeacon: (url: string, data: Blob) => boolean }).sendBeacon(url, new Blob([payload], { type: "application/json" }));
+        if (ok) dispatched = true;
+        else throw new Error("beacon rejected");
+      } catch {
+        fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, credentials: "include", keepalive: true } as RequestInit);
+        dispatched = true;
+      }
+    } else {
+      fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, credentials: "include", keepalive: true } as RequestInit);
+      dispatched = true;
+    }
+  } catch {}
+  if (dispatched) released.add(key);
+  return dispatched;
 }
