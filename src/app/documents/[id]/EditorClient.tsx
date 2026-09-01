@@ -19,7 +19,7 @@ import {
   sceneMatchesLastSaved,
   getManualSaveStatus,
 } from "@/lib/client_save";
-import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft } from "@/lib/client_edit_lease";
+import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, waitForNoSaving } from "@/lib/client_edit_lease";
 import type { EditorLeaseMode } from "@/lib/client_edit_lease";
 import type { EditLeaseCredentials, ExcalidrawScene, Permission, LeaseHolderSummary } from "@/lib/types";
 import type { LocalDraftEnvelope } from "@/lib/client_save";
@@ -247,16 +247,15 @@ export default function EditorClient({
     }
   }, [docId, draftConflict, setStatus]);
 
-  const fetchLatestAndDecideDraft = useCallback(async () => {
+  const finalizeAcquisition = useCallback(async (creds: EditLeaseCredentials) => {
     try {
-      const data = await api<{ document: { title: string; updated_at?: string; }; scene: ExcalidrawScene; permission: Permission }>(`/api/documents/${docId}`);
+      const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
       const serverScene = data.scene;
-      const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || initialUpdatedAt || "";
-      const decision2 = decideDraftForAccess(shouldReadLocalDraft(leaseMode as EditorLeaseMode), () => {
+      const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || "";
+      const decision = decideDraftForAccess(true, () => {
         try { return localStorage.getItem(draftKey); } catch { return null; }
       }, serverScene);
-
-      if (decision2.kind === "equal") {
+      if (decision.kind === "equal") {
         try { localStorage.removeItem(draftKey); } catch {}
         sceneRef.current = serverScene;
         lastSavedContentRef.current = serializeSceneForComparison(serverScene);
@@ -266,11 +265,11 @@ export default function EditorClient({
         setCanvasKey((k) => k + 1);
         setRecoveryReady(true);
         setDraftConflict(null);
-      } else if (decision2.kind === "conflict") {
-        setDraftConflict({ draft: decision2.draft, serverScene, serverUpdatedAt });
+      } else if (decision.kind === "conflict") {
+        setDraftConflict({ draft: decision.draft, serverScene, serverUpdatedAt });
         setRecoveryReady(false);
       } else {
-        if (decision2.kind === "malformed") {
+        if (decision.kind === "malformed") {
           setStatus("Local recovery draft could not be read; server version opened and draft retained.", "error");
         }
         sceneRef.current = serverScene;
@@ -282,10 +281,15 @@ export default function EditorClient({
         setRecoveryReady(true);
         setDraftConflict(null);
       }
-    } catch (e) {
+      setLeaseMode("active");
+    } catch (err) {
+      try { await releaseLease(docId, creds); } catch {}
+      leaseCredentialsRef.current = null;
+      setLeaseError(err instanceof Error ? err.message : "Failed to load latest document. Please retry.");
+      setLeaseMode("blocked");
       setRecoveryReady(true);
     }
-  }, [docId, draftKey, initialUpdatedAt, leaseMode, setStatus]);
+  }, [docId, draftKey, setStatus]);
 
   // Initial lease gate
   useEffect(() => {
@@ -308,55 +312,9 @@ export default function EditorClient({
         const result = await acquireLease(docId, { clientId, leaseToken });
         if (cancelled) return;
         if (result.state === "acquired") {
-          leaseCredentialsRef.current = { clientId, leaseToken, generation: result.generation };
-          setLeaseMode("active");
-          // Fetch latest server scene before draft resolution
-          try {
-            const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
-            const serverScene = data.scene;
-            const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || initialUpdatedAt || "";
-            const decision = decideDraftForAccess(true, () => {
-              try { return localStorage.getItem(draftKey); } catch { return null; }
-            }, serverScene);
-            if (decision.kind === "equal") {
-              try { localStorage.removeItem(draftKey); } catch {}
-              sceneRef.current = serverScene;
-              lastSavedContentRef.current = serializeSceneForComparison(serverScene);
-              isDirtyRef.current = false;
-              persistedFileIdsRef.current = new Set(Object.keys(serverScene.files || {}));
-              setInitialCanvasScene(serverScene);
-              setCanvasKey((k) => k + 1);
-              setRecoveryReady(true);
-            } else if (decision.kind === "conflict") {
-              setDraftConflict({ draft: decision.draft, serverScene, serverUpdatedAt });
-              setRecoveryReady(false);
-            } else {
-              if (decision.kind === "malformed") {
-                setStatus("Local recovery draft could not be read; server version opened and draft retained.", "error");
-              }
-              sceneRef.current = serverScene;
-              lastSavedContentRef.current = serializeSceneForComparison(serverScene);
-              isDirtyRef.current = false;
-              persistedFileIdsRef.current = new Set(Object.keys(serverScene.files || {}));
-              setInitialCanvasScene(serverScene);
-              setCanvasKey((k) => k + 1);
-              setRecoveryReady(true);
-            }
-          } catch {
-            // fallback to initialScene
-            const decision = decideDraftForAccess(true, () => {
-              try { return localStorage.getItem(draftKey); } catch { return null; }
-            }, initialScene);
-            if (decision.kind === "equal") {
-              try { localStorage.removeItem(draftKey); } catch {}
-              setRecoveryReady(true);
-            } else if (decision.kind === "conflict") {
-              setDraftConflict({ draft: decision.draft, serverScene: initialScene, serverUpdatedAt: initialUpdatedAt || "" });
-              setRecoveryReady(false);
-            } else {
-              setRecoveryReady(true);
-            }
-          }
+          const creds = { clientId, leaseToken, generation: result.generation };
+          leaseCredentialsRef.current = creds;
+          await finalizeAcquisition(creds);
         } else if (result.state === "held") {
           setLeaseHolder(result.holder);
           setLeaseMode("blocked");
@@ -413,34 +371,9 @@ export default function EditorClient({
     try {
       const result = await requestTakeover(docId, { clientId, leaseToken });
       if (result.state === "acquired") {
-        leaseCredentialsRef.current = { clientId, leaseToken, generation: result.generation };
-        setLeaseMode("active");
-        // fetch latest and then draft
-        const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
-        const serverScene = data.scene;
-        const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || "";
-        const decision = decideDraftForAccess(true, () => {
-          try { return localStorage.getItem(draftKey); } catch { return null; }
-        }, serverScene);
-        if (decision.kind === "equal") {
-          try { localStorage.removeItem(draftKey); } catch {}
-          sceneRef.current = serverScene;
-          lastSavedContentRef.current = serializeSceneForComparison(serverScene);
-          setInitialCanvasScene(serverScene);
-          setCanvasKey((k) => k + 1);
-          setRecoveryReady(true);
-          setDraftConflict(null);
-        } else if (decision.kind === "conflict") {
-          setDraftConflict({ draft: decision.draft, serverScene, serverUpdatedAt });
-          setRecoveryReady(false);
-        } else {
-          sceneRef.current = serverScene;
-          lastSavedContentRef.current = serializeSceneForComparison(serverScene);
-          setInitialCanvasScene(serverScene);
-          setCanvasKey((k) => k + 1);
-          setRecoveryReady(true);
-          setDraftConflict(null);
-        }
+        const creds = { clientId, leaseToken, generation: result.generation };
+        leaseCredentialsRef.current = creds;
+        await finalizeAcquisition(creds);
         setLeaseBusy(false);
         return;
       }
@@ -453,34 +386,10 @@ export default function EditorClient({
             const pollRes = await pollTakeover(docId, { clientId, leaseToken, requestId });
             if (pollRes.state === "acquired") {
               if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
-              leaseCredentialsRef.current = { clientId, leaseToken, generation: pollRes.generation };
-              setLeaseMode("active");
+              const creds = { clientId, leaseToken, generation: pollRes.generation };
+              leaseCredentialsRef.current = creds;
+              await finalizeAcquisition(creds);
               setLeaseBusy(false);
-              const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
-              const serverScene = data.scene;
-              const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || "";
-              const decision = decideDraftForAccess(true, () => {
-                try { return localStorage.getItem(draftKey); } catch { return null; }
-              }, serverScene);
-              if (decision.kind === "equal") {
-                try { localStorage.removeItem(draftKey); } catch {}
-                sceneRef.current = serverScene;
-                lastSavedContentRef.current = serializeSceneForComparison(serverScene);
-                setInitialCanvasScene(serverScene);
-                setCanvasKey((k) => k + 1);
-                setRecoveryReady(true);
-                setDraftConflict(null);
-              } else if (decision.kind === "conflict") {
-                setDraftConflict({ draft: decision.draft, serverScene, serverUpdatedAt });
-                setRecoveryReady(false);
-              } else {
-                sceneRef.current = serverScene;
-                lastSavedContentRef.current = serializeSceneForComparison(serverScene);
-                setInitialCanvasScene(serverScene);
-                setCanvasKey((k) => k + 1);
-                setRecoveryReady(true);
-                setDraftConflict(null);
-              }
             } else if (pollRes.state === "takeover_pending") {
               // still waiting
             }
@@ -508,73 +417,88 @@ export default function EditorClient({
     }
   }, [docId, draftKey]);
 
-  // Heartbeat and graceful handoff
+  // Heartbeat and graceful handoff with serialization and bounded status checking
   useEffect(() => {
-    if (leaseMode !== "active") return;
+    if (leaseMode !== "active" && leaseMode !== "handoff") return;
     const creds = leaseCredentialsRef.current;
     if (!creds) return;
-    const startHeartbeat = () => {
-      heartbeatTimerRef.current = setInterval(async () => {
-        try {
-          const res = await heartbeatLease(docId, creds);
-          if (res.state === "takeover_pending") {
-            if (handoffGuardRef.current) return;
-            handoffGuardRef.current = true;
-            setLeaseMode("handoff");
-            if (debounceRef.current) {
-              clearTimeout(debounceRef.current);
-              debounceRef.current = null;
-            }
-            try {
-              await saveDocumentScene({
-                docId,
-                scene: sceneRef.current,
-                persistedFileIds: persistedFileIdsRef.current,
-                isManualSave: false,
-                snapshotDue: false,
-                lease: creds,
-              });
-              // Flush succeeded, acknowledge transfer via release
-              await releaseLease(docId, creds);
-              // Become read-only with latest server scene
-              const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
-              sceneRef.current = data.scene;
-              lastSavedContentRef.current = serializeSceneForComparison(data.scene);
-              persistedFileIdsRef.current = new Set(Object.keys(data.scene.files || {}));
-              setInitialCanvasScene(data.scene);
-              setCanvasKey((k) => k + 1);
-              isDirtyRef.current = false;
-              // Do not clear draft? Handoff old editor retains draft if any? Actually after successful flush, dirty should be false and draft cleared? But spec says old editor retains any unconfirmed local draft after takeover? Handoff flush clears dirty, but if there were unconfirmed edits not flushed? The flush includes latest scene, so after flush, draft should be cleared. We'll clear isDirty.
-              try { localStorage.removeItem(draftKey); } catch {}
-              setLeaseMode("readonly");
-              leaseCredentialsRef.current = null;
-              if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; }
-            } catch (e) {
-              setStatus("Failed to flush changes for handover; waiting for forced takeover.", "error");
-              handoffGuardRef.current = false;
-              // Do not ack, wait for forced loss
-              // Keep handoff mode, next heartbeat will still see pending but guard prevents duplicate handoff
-              // After forced timeout, heartbeat will throw EDIT_LEASE_LOST and handleLeaseLost will run
-            }
+    if (heartbeatTimerRef.current) return;
+    heartbeatTimerRef.current = setInterval(async () => {
+      try {
+        const res = await heartbeatLease(docId, creds);
+        if (res.state === "takeover_pending") {
+          if (handoffGuardRef.current) return;
+          handoffGuardRef.current = true;
+          setLeaseMode("handoff");
+          if (debounceRef.current) {
+            clearTimeout(debounceRef.current);
+            debounceRef.current = null;
           }
-        } catch (err) {
-          if (err instanceof ApiError && err.code === "EDIT_LEASE_LOST") {
-            const isDirty = isDirtyRef.current;
-            void handleLeaseLost(isDirty);
-          } else if (err instanceof ApiError && err.status === 403) {
-            const isDirty = isDirtyRef.current;
-            void handleLeaseLost(isDirty);
-          } else {
-            // network error, keep trying
+          await waitForNoSaving(isSavingRef);
+          // Ensure latest scene is confirmed final write before release
+          try {
+            await saveDocumentScene({
+              docId,
+              scene: sceneRef.current,
+              persistedFileIds: persistedFileIdsRef.current,
+              isManualSave: false,
+              snapshotDue: false,
+              lease: creds,
+            });
+            await releaseLease(docId, creds);
+            const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
+            sceneRef.current = data.scene;
+            lastSavedContentRef.current = serializeSceneForComparison(data.scene);
+            persistedFileIdsRef.current = new Set(Object.keys(data.scene.files || {}));
+            setInitialCanvasScene(data.scene);
+            setCanvasKey((k) => k + 1);
+            isDirtyRef.current = false;
+            try { localStorage.removeItem(draftKey); } catch {}
+            setLeaseMode("readonly");
+            leaseCredentialsRef.current = null;
+            if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; }
+            handoffGuardRef.current = false;
+          } catch (e) {
+            if (e instanceof ApiError && e.code === "EDIT_LEASE_LOST") {
+              const isDirty = isDirtyRef.current;
+              void handleLeaseLost(isDirty);
+              handoffGuardRef.current = false;
+            } else {
+              setStatus("Failed to flush changes for handover; will retry until takeover completes.", "error");
+              // Transition to read-only with latest server scene while retaining draft on failure/race
+              try {
+                const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
+                sceneRef.current = data.scene;
+                lastSavedContentRef.current = serializeSceneForComparison(data.scene);
+                setInitialCanvasScene(data.scene);
+                setCanvasKey((k) => k + 1);
+              } catch {}
+              // Keep handoff but allow next heartbeat to detect forced loss; bounded retry without SSE
+              handoffGuardRef.current = false;
+              // If forced transfer already happened, next heartbeat will trigger EDIT_LEASE_LOST
+            }
           }
         }
-      }, 2000);
-    };
-    startHeartbeat();
+      } catch (err) {
+        if (err instanceof ApiError && (err.code === "EDIT_LEASE_LOST" || err.status === 403)) {
+          const isDirty = isDirtyRef.current;
+          void handleLeaseLost(isDirty);
+          handoffGuardRef.current = false;
+        }
+      }
+    }, 2000);
     return () => {
-      if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; }
+      // Do not clear on handoff; only clear when leaving active/handoff to readonly/lost/blocked
     };
   }, [leaseMode, docId, draftKey, handleLeaseLost, setStatus]);
+
+  // Cleanup heartbeat when leaving active/handoff
+  useEffect(() => {
+    if (leaseMode !== "active" && leaseMode !== "handoff") {
+      if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; }
+      handoffGuardRef.current = false;
+    }
+  }, [leaseMode]);
 
   // Centralize EDIT_LEASE_LOST handling for save/recovery/restore via wrapper?
   // We'll handle in respective callbacks by checking ApiError code.
@@ -908,7 +832,7 @@ export default function EditorClient({
 
   async function restoreVersion(versionId: string) {
     if (!canEditCanvas) return;
-    if (!confirm("Restore this version? A new snapshot of the restored version will be created.")) {
+    if (!confirm("Restore this version? A snapshot of the current state will be saved before restoring.")) {
       return;
     }
     try {
@@ -1268,7 +1192,7 @@ export default function EditorClient({
             </div>
 
             <div className="p-3 text-xs text-gray-500 bg-gray-50 border-b">
-              Up to 20 recovery snapshots are preserved. Restoring a version creates a new current snapshot.
+              Up to 20 snapshots are preserved. Restoring saves a snapshot of the current state before applying the selected version.
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">

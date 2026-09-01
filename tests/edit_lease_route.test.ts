@@ -75,12 +75,14 @@ describe("Lease API route", () => {
     expect(pollPending.status).toBe(200);
     expect((await pollPending.json()).state).toBe("takeover_pending");
 
-    // release gracefully transfers to pending requester
+    // release gracefully transfers to pending requester without leaking new holder credentials
     const rel = await leaseRoute(request(doc.id, sessOwner.token, { action: "release", clientId: "c1", leaseToken: "tok1", generation: gen }), { params: Promise.resolve({ id: doc.id }) });
     expect(rel.status).toBe(200);
     const relBody = await rel.json();
-    expect(relBody.state).toBe("acquired");
-    expect(relBody.generation).toBe(gen + 1);
+    expect(relBody.state).toBe("transferred");
+    expect(JSON.stringify(relBody)).not.toContain("tok2");
+    expect(JSON.stringify(relBody)).not.toContain("c2");
+    expect(JSON.stringify(relBody)).not.toContain("leaseToken");
 
     // malformed/missing action fields 400
     const bad = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "", leaseToken: "tok" }), { params: Promise.resolve({ id: doc.id }) });
@@ -134,5 +136,22 @@ describe("Lease API route", () => {
     const b2 = await p2.json();
     expect(b2.code).toBe("TAKEOVER_IN_PROGRESS");
     expect(JSON.stringify(b2)).not.toContain("t1");
+  });
+
+  it("release does not leak new holder credentials and deadline race preserves pending", async () => {
+    const holder = createUser("holder", "pass123", "USER");
+    const requester = createUser("requester", "pass123", "USER");
+    const doc = createDocument(holder.id, emptyScene(), "Doc");
+    addMember(doc.id, requester.id, "EDITOR");
+    const sHolder = createSession(holder.id);
+    const sRequester = createSession(requester.id);
+    const acq = await leaseRoute(request(doc.id, sHolder.token, { action: "acquire", clientId: "c-h", leaseToken: "t-h-secret" }), { params: Promise.resolve({ id: doc.id }) });
+    const gen = (await acq.json()).generation;
+    await leaseRoute(request(doc.id, sRequester.token, { action: "request_takeover", clientId: "c-r", leaseToken: "t-r-secret" }), { params: Promise.resolve({ id: doc.id }) });
+    const rel = await leaseRoute(request(doc.id, sHolder.token, { action: "release", clientId: "c-h", leaseToken: "t-h-secret", generation: gen }), { params: Promise.resolve({ id: doc.id }) });
+    const body = await rel.json();
+    expect(body.state).toBe("transferred");
+    expect(JSON.stringify(body)).not.toContain("t-r-secret");
+    expect(JSON.stringify(body)).not.toContain("c-r");
   });
 });

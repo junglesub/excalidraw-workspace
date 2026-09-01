@@ -75,43 +75,6 @@ function getBase(): string {
   return "http://localhost";
 }
 
-async function leaseFetch(docId: string, body: Record<string, unknown>, fetchFn?: typeof fetch): Promise<LeaseResponse> {
-  const fetchImpl = fetchFn || (typeof window !== "undefined" ? window.fetch.bind(window) : globalThis.fetch);
-  const base = getBase();
-  const url = new URL(`/api/documents/${encodeURIComponent(docId)}/lease`, base);
-  const res = await fetchImpl(url.toString(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    credentials: "include",
-  });
-  const text = await res.text();
-  let data: unknown = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
-  }
-  if (!res.ok) {
-    const msg = data && typeof data === "object" && "error" in data ? String((data as { error: unknown }).error) : `Request failed (${res.status})`;
-    const code = data && typeof data === "object" && "code" in data && typeof (data as { code: unknown }).code === "string" ? String((data as { code: unknown }).code) : undefined;
-    // For held and takeover_in_progress, server returns 409 with JSON body that includes holder info even on error.
-    // If body contains state, return it as normal result instead of throwing? But spec says held returns 409.
-    // For client transport, we want to surface held as throw with ApiError? However lease API tests expect held as 409 throw.
-    // For caller convenience, if data contains state held/takeover_in_progress, we can throw ApiError but also include data.
-    // Simpler: throw ApiError with code and the data's holder info can be parsed from error? But transport tests expect to get state held via thrown error's handling.
-    // To make transport stateless and let caller decide, we throw ApiError. The caller can inspect status/code.
-    // However for polling, we need to distinguish. We'll throw.
-    throw new ApiError(res.status, msg, code);
-  }
-  return data as LeaseResponse;
-}
-
-// For cases where held is returned as 409, the caller may want the holder data. The fetch above throws.
-// To still provide holder data, we could catch and return? But spec for transport: they send one HTTP request and return typed response.
-// For 409 held, they should still return holder info via successful parsing. To support tests that check held via error body, we can handle 409 specially: if res.status===409 and data has state, return data as LeaseResponse instead of throwing.
-// Let's adjust: if status 409 and data has state held/takeover_in_progress, return it.
-
 async function leaseFetchWithHeld(docId: string, body: Record<string, unknown>, fetchFn?: typeof fetch): Promise<LeaseResponse> {
   const fetchImpl = fetchFn || (typeof window !== "undefined" ? window.fetch.bind(window) : globalThis.fetch);
   const base = getBase();
@@ -173,4 +136,12 @@ export function canMutateCanvas(mode: EditorLeaseMode): boolean {
 
 export function shouldReadLocalDraft(mode: EditorLeaseMode): boolean {
   return mode === "active";
+}
+
+export async function waitForNoSaving(isSavingRef: { current: boolean }, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (isSavingRef.current) {
+    if (Date.now() - start > timeoutMs) throw new Error("timeout waiting for saving to finish");
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }

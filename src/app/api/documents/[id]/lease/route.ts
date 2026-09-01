@@ -21,6 +21,16 @@ function isValidGeneration(v: unknown): v is number {
   return typeof v === "number" && Number.isSafeInteger(v) && v > 0;
 }
 
+function parseLeaseCredentials(body: Record<string, unknown>, requireGeneration: boolean): { clientId: string; leaseToken: string; generation?: number } | null {
+  const clientId = body.clientId;
+  const leaseToken = body.leaseToken;
+  const generation = body.generation;
+  if (!isNonEmptyBoundedString(clientId) || !isNonEmptyBoundedString(leaseToken)) return null;
+  if (requireGeneration && !isValidGeneration(generation)) return null;
+  if (!requireGeneration && generation !== undefined && generation !== null && !isValidGeneration(generation)) return null;
+  return { clientId: clientId as string, leaseToken: leaseToken as string, generation: generation as number | undefined };
+}
+
 export async function POST(req: Request, { params }: Ctx) {
   try {
     const { id } = await params;
@@ -48,14 +58,12 @@ export async function POST(req: Request, { params }: Ctx) {
     }
 
     if (action === "heartbeat") {
-      const clientId = body.clientId;
-      const leaseToken = body.leaseToken;
-      const generation = body.generation;
-      if (!isNonEmptyBoundedString(clientId) || !isNonEmptyBoundedString(leaseToken) || !isValidGeneration(generation)) {
+      const creds = parseLeaseCredentials(body, true);
+      if (!creds || creds.generation === undefined) {
         return json({ error: "clientId, leaseToken and generation are required", code: "INVALID_CREDENTIALS" }, 400);
       }
       const result = heartbeatEditLease(
-        { docId: id, userId: user.id, role: user.role, adminMode, clientId, leaseToken, generation },
+        { docId: id, userId: user.id, role: user.role, adminMode, clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation },
       );
       // heartbeat may return takeover_pending; that's still 200 but signals transfer
       if (result.state === "takeover_pending") {
@@ -87,18 +95,16 @@ export async function POST(req: Request, { params }: Ctx) {
     }
 
     if (action === "poll_takeover") {
-      const clientId = body.clientId;
-      const leaseToken = body.leaseToken;
+      const creds = parseLeaseCredentials(body, false);
       const requestId = body.requestId;
-      const generation = body.generation;
-      if (!isNonEmptyBoundedString(clientId) || !isNonEmptyBoundedString(leaseToken) || !isNonEmptyBoundedString(requestId)) {
+      if (!creds || !isNonEmptyBoundedString(requestId)) {
         return json({ error: "clientId, leaseToken and requestId are required", code: "INVALID_CREDENTIALS" }, 400);
       }
-      if (generation !== undefined && generation !== null && !isValidGeneration(generation)) {
+      if (creds.generation !== undefined && !isValidGeneration(creds.generation)) {
         return json({ error: "generation must be a positive integer", code: "INVALID_CREDENTIALS" }, 400);
       }
       const result = pollEditTakeover(
-        { docId: id, userId: user.id, role: user.role, adminMode, clientId, leaseToken, requestId, generation: generation as number | undefined },
+        { docId: id, userId: user.id, role: user.role, adminMode, clientId: creds.clientId, leaseToken: creds.leaseToken, requestId: requestId as string, generation: creds.generation },
       );
       if (result.state === "takeover_in_progress") {
         return json({ ...result, code: "TAKEOVER_IN_PROGRESS" }, 409);
@@ -110,14 +116,12 @@ export async function POST(req: Request, { params }: Ctx) {
     }
 
     if (action === "release") {
-      const clientId = body.clientId;
-      const leaseToken = body.leaseToken;
-      const generation = body.generation;
-      if (!isNonEmptyBoundedString(clientId) || !isNonEmptyBoundedString(leaseToken) || !isValidGeneration(generation)) {
+      const creds = parseLeaseCredentials(body, true);
+      if (!creds || creds.generation === undefined) {
         return json({ error: "clientId, leaseToken and generation are required", code: "INVALID_CREDENTIALS" }, 400);
       }
       const result = releaseEditLease(
-        { docId: id, userId: user.id, role: user.role, adminMode, clientId, leaseToken, generation },
+        { docId: id, userId: user.id, role: user.role, adminMode, clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation },
       );
       return json(result, 200);
     }

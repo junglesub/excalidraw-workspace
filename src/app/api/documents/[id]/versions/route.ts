@@ -1,6 +1,7 @@
 import { handleError, json, jsonError, readJson, requireUser, adminModeFrom } from "@/lib/http";
 import { listVersions } from "@/lib/versions";
 import { getDocumentRaw, requireRead } from "@/lib/documents";
+import { parseAndValidateLeaseCredentials } from "@/lib/edit_lease";
 
 interface Ctx {
   params: Promise<{ id: string }>;
@@ -32,11 +33,10 @@ export async function POST(req: Request, { params }: Ctx) {
       return json({ error: "versionId is required" }, 400);
     }
     const body = await readJson(req).catch(() => ({} as Record<string, unknown>));
-    const lease = (body as Record<string, unknown>).lease as unknown;
-    if (!lease || typeof lease !== "object" || typeof (lease as Record<string, unknown>).clientId !== "string" || !(lease as Record<string, unknown>).clientId || String((lease as Record<string, unknown>).clientId).length > 256 || typeof (lease as Record<string, unknown>).leaseToken !== "string" || !(lease as Record<string, unknown>).leaseToken || String((lease as Record<string, unknown>).leaseToken).length > 256 || typeof (lease as Record<string, unknown>).generation !== "number" || !Number.isSafeInteger((lease as Record<string, unknown>).generation) || Number((lease as Record<string, unknown>).generation) <= 0) {
+    const leaseCreds = parseAndValidateLeaseCredentials((body as Record<string, unknown>).lease as Record<string, unknown>);
+    if (!leaseCreds) {
       return jsonError("lease credentials are required", 400);
     }
-    const leaseCreds = lease as { clientId: string; leaseToken: string; generation: number };
     const { restoreVersion } = await import("@/lib/versions");
     const snapshot = restoreVersion(id, versionId, user.id, user.role, adminMode, leaseCreds);
     return json({ ok: true, snapshot, versions: listVersions(id) });

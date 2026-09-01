@@ -174,16 +174,41 @@ describe("Document edit lease state machine", () => {
       { docId: doc.id, userId: holder.id, role: "USER", adminMode: false, clientId: "client-a", leaseToken: "token-a", generation: gen },
       new Date(NOW.getTime() + 1000),
     );
-    expect(transferred.state).toBe("acquired");
-    if (transferred.state === "acquired") {
-      expect(transferred.generation).toBe(gen + 1);
-      expect(transferred.clientId).toBe("client-b");
-    }
+    expect(transferred.state).toBe("transferred");
+    expect(JSON.stringify(transferred)).not.toContain("token-b");
+    expect(JSON.stringify(transferred)).not.toContain("client-b");
+    // Verify generation advanced via DB and new holder installed
+    const row = getDb().prepare("SELECT generation, holder_user_id, lease_token, holder_client_id FROM document_edit_leases WHERE document_id=?").get(doc.id) as any;
+    expect(row.generation).toBe(gen + 1);
+    expect(row.holder_user_id).toBe(requester.id);
+    expect(row.lease_token).toBe("token-b");
+    expect(row.holder_client_id).toBe("client-b");
 
     // Old holder rejected
     expect(() =>
       assertActiveEditLease({ docId: doc.id, userId: holder.id, role: "USER", adminMode: false, clientId: "client-a", leaseToken: "token-a", generation: gen }, new Date(NOW.getTime() + 2000)),
     ).toThrowError(/lost/i);
+  });
+
+  it("release graceful transfer does not leak new holder credentials to old holder", () => {
+    const holder = createUser("holder", "pass123", "USER");
+    const requester = createUser("requester", "pass123", "USER");
+    const doc = makeDoc(holder.id);
+    addMember(doc.id, requester.id, "EDITOR");
+    const acquired = acquireEditLease(identity(doc.id, holder.id, { clientId: "c-holder", leaseToken: "t-holder-secret" }), NOW);
+    if (acquired.state !== "acquired") throw new Error();
+    const gen = acquired.generation;
+    requestEditTakeover(identity(doc.id, requester.id, { clientId: "c-req", leaseToken: "t-req-secret" }), NOW);
+    const result = releaseEditLease(
+      { docId: doc.id, userId: holder.id, role: "USER", adminMode: false, clientId: "c-holder", leaseToken: "t-holder-secret", generation: gen },
+      new Date(NOW.getTime() + 500),
+    );
+    expect(result.state).toBe("transferred");
+    const json = JSON.stringify(result);
+    expect(json).not.toContain("t-req-secret");
+    expect(json).not.toContain("c-req");
+    expect(json).not.toContain("leaseToken");
+    expect(json).not.toContain("clientId");
   });
 
   it("VIEWER denial", () => {
@@ -307,5 +332,63 @@ describe("Document edit lease state machine", () => {
         expired,
       ),
     ).toThrowError(/lost/i);
+  });
+
+  it("deadline race: poll-first and release-first at deadline both transfer to requester", () => {
+    const holder = createUser("holder", "pass123", "USER");
+    const requester = createUser("requester", "pass123", "USER");
+    // poll-first scenario
+    const doc1 = makeDoc(holder.id);
+    addMember(doc1.id, requester.id, "EDITOR");
+    const acq1 = acquireEditLease(identity(doc1.id, holder.id, { clientId: "c-h", leaseToken: "t-h" }), NOW);
+    if (acq1.state !== "acquired") throw new Error();
+    const gen1 = acq1.generation;
+    const pend1 = requestEditTakeover(identity(doc1.id, requester.id, { clientId: "c-r", leaseToken: "t-r" }), NOW);
+    if (pend1.state !== "takeover_pending") throw new Error();
+    const requestId1 = (pend1 as any).requestId;
+    const deadline1 = new Date(NOW.getTime() + TAKEOVER_TIMEOUT_MS);
+    // Poll at deadline transfers
+    const pollRes = pollEditTakeover({ docId: doc1.id, userId: requester.id, role: "USER", adminMode: false, clientId: "c-r", leaseToken: "t-r", requestId: requestId1 }, deadline1);
+    expect(pollRes.state).toBe("acquired");
+    if (pollRes.state === "acquired") expect(pollRes.generation).toBe(gen1 + 1);
+    // Verify holder is requester
+    const row1 = getDb().prepare("SELECT holder_user_id FROM document_edit_leases WHERE document_id=?").get(doc1.id) as any;
+    expect(row1.holder_user_id).toBe(requester.id);
+
+    // release-first scenario
+    const doc2 = createDocument(holder.id, emptyScene(), "Doc2");
+    addMember(doc2.id, requester.id, "EDITOR");
+    const acq2 = acquireEditLease(identity(doc2.id, holder.id, { clientId: "c-h2", leaseToken: "t-h2" }), NOW);
+    if (acq2.state !== "acquired") throw new Error();
+    const gen2 = acq2.generation;
+    const pend2 = requestEditTakeover(identity(doc2.id, requester.id, { clientId: "c-r2", leaseToken: "t-r2" }), NOW);
+    if (pend2.state !== "takeover_pending") throw new Error();
+    // Release at deadline should still transfer, not destroy pending
+    const deadline2 = new Date(NOW.getTime() + TAKEOVER_TIMEOUT_MS);
+    const relRes = releaseEditLease({ docId: doc2.id, userId: holder.id, role: "USER", adminMode: false, clientId: "c-h2", leaseToken: "t-h2", generation: gen2 }, deadline2);
+    expect(relRes.state).toBe("transferred");
+    const row2 = getDb().prepare("SELECT holder_user_id, generation FROM document_edit_leases WHERE document_id=?").get(doc2.id) as any;
+    expect(row2.holder_user_id).toBe(requester.id);
+    expect(row2.generation).toBe(gen2 + 1);
+    // Poll after release should show requester already holder
+    const pollAfter = pollEditTakeover({ docId: doc2.id, userId: requester.id, role: "USER", adminMode: false, clientId: "c-r2", leaseToken: "t-r2", requestId: (pend2 as any).requestId }, new Date(deadline2.getTime() + 100));
+    expect(pollAfter.state).toBe("acquired");
+  });
+
+  it("stale holder release at deadline does not destroy structurally valid pending", () => {
+    const holder = createUser("holder", "pass123", "USER");
+    const requester = createUser("requester", "pass123", "USER");
+    const doc = makeDoc(holder.id);
+    addMember(doc.id, requester.id, "EDITOR");
+    const acq = acquireEditLease(identity(doc.id, holder.id), NOW);
+    if (acq.state !== "acquired") throw new Error();
+    const gen = acq.generation;
+    const pend = requestEditTakeover(identity(doc.id, requester.id, { clientId: "c-r", leaseToken: "t-r" }), NOW);
+    expect(pend.state).toBe("takeover_pending");
+    const atDeadline = new Date(NOW.getTime() + TAKEOVER_TIMEOUT_MS);
+    // Holder's release with correct credentials at deadline must transfer, not clear
+    const res = releaseEditLease({ docId: doc.id, userId: holder.id, role: "USER", adminMode: false, clientId: "client-a", leaseToken: "token-a", generation: gen }, atDeadline);
+    expect(res.state).toBe("transferred");
+    expect(JSON.stringify(res)).not.toContain("t-r");
   });
 });

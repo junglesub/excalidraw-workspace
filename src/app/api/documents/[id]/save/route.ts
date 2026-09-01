@@ -2,6 +2,7 @@ import { handleError, json, jsonError, readJson, requireUser, adminModeFrom } fr
 import { jsonToScene } from "@/lib/types";
 import { handleManualSave } from "@/lib/versions";
 import { decodePngDataURL } from "@/lib/thumbnails";
+import { parseAndValidateLeaseCredentials } from "@/lib/edit_lease";
 
 export const dynamic = "force-dynamic";
 
@@ -24,11 +25,10 @@ export async function POST(req: Request, { params }: Ctx) {
     }
     const scene = jsonToScene(JSON.stringify(body.scene));
     const thumbBuf = decodePngDataURL(body.thumbnailBase64);
-    const lease = (body as Record<string, unknown>).lease as unknown;
-    if (!lease || typeof lease !== "object" || typeof (lease as Record<string, unknown>).clientId !== "string" || !(lease as Record<string, unknown>).clientId || String((lease as Record<string, unknown>).clientId).length > 256 || typeof (lease as Record<string, unknown>).leaseToken !== "string" || !(lease as Record<string, unknown>).leaseToken || String((lease as Record<string, unknown>).leaseToken).length > 256 || typeof (lease as Record<string, unknown>).generation !== "number" || !Number.isSafeInteger((lease as Record<string, unknown>).generation) || Number((lease as Record<string, unknown>).generation) <= 0) {
+    const leaseCreds = parseAndValidateLeaseCredentials((body as Record<string, unknown>).lease as Record<string, unknown>);
+    if (!leaseCreds) {
       return jsonError("lease credentials are required", 400);
     }
-    const leaseCreds = lease as { clientId: string; leaseToken: string; generation: number };
     const result = handleManualSave(id, user.id, user.role, adminMode, scene, thumbBuf, leaseCreds);
     return json({
       ok: true,

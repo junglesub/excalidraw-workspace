@@ -42,11 +42,21 @@ export interface LeaseTakeoverInProgressResult {
   deadlineAt: string;
 }
 
+export interface LeaseReleasedResult {
+  state: "released";
+}
+
+export interface LeaseTransferredResult {
+  state: "transferred";
+}
+
 export type LeaseResult =
   | LeaseAcquiredResult
   | LeaseHeldResult
   | LeaseTakeoverPendingResult
-  | LeaseTakeoverInProgressResult;
+  | LeaseTakeoverInProgressResult
+  | LeaseReleasedResult
+  | LeaseTransferredResult;
 
 interface LeaseRow {
   document_id: string;
@@ -143,6 +153,16 @@ function validateNotDeleted(docId: string): void {
 function validateWritePermission(input: { docId: string; userId: string; role: "USER" | "ADMIN"; adminMode: boolean }): void {
   validateNotDeleted(input.docId);
   requireWrite(input.docId, input.userId, input.role, input.adminMode);
+}
+
+export function parseAndValidateLeaseCredentials(body: Record<string, unknown>): EditLeaseCredentials | null {
+  const clientId = body.clientId;
+  const leaseToken = body.leaseToken;
+  const generation = body.generation;
+  if (typeof clientId !== "string" || clientId.length === 0 || clientId.length > 256) return null;
+  if (typeof leaseToken !== "string" || leaseToken.length === 0 || leaseToken.length > 256) return null;
+  if (typeof generation !== "number" || !Number.isSafeInteger(generation) || generation <= 0) return null;
+  return { clientId, leaseToken, generation };
 }
 
 function getLeaseRow(docId: string): LeaseRow | undefined {
@@ -411,12 +431,9 @@ export function releaseEditLease(input: ActiveLeaseInput, now?: Date): LeaseResu
   return transaction(() => {
     const row = getLeaseRow(input.docId);
     if (!row || !row.holder_user_id) {
-      // No holder: just ensure generation retained, nothing to do. Return held? But spec says ordinary release clears holder fields but retains row.
-      // If no holder, do nothing
-      if (row) return { state: "held", holder: holderSummaryFromRow(row) } as LeaseHeldResult;
+      if (row) return { state: "released" } as LeaseReleasedResult;
       throw new HttpError(404, "Lease not found", "EDIT_LEASE_LOST");
     }
-    // Validate holder credentials for release; if mismatch, throw lost? For graceful transfer via release, holder must be valid.
     const expired = isExpired(row, nowDate);
     if (
       row.holder_user_id !== input.userId ||
@@ -428,8 +445,17 @@ export function releaseEditLease(input: ActiveLeaseInput, now?: Date): LeaseResu
       throw new HttpError(409, "Editing lease was lost", "EDIT_LEASE_LOST");
     }
 
-    // If takeover pending, perform graceful transfer instead of ordinary release
-    if (row.takeover_request_id && !isTakeoverExpired(row, nowDate)) {
+    // If takeover pending with structurally valid request, perform graceful/forced transfer instead of ordinary release.
+    // A structurally valid pending must not be destroyed by late release at/after deadline.
+    const hasStructurallyValidPending =
+      !!row.takeover_request_id &&
+      !!row.takeover_user_id &&
+      !!row.takeover_client_id &&
+      !!row.takeover_lease_token &&
+      !!row.takeover_requested_at &&
+      !!row.takeover_deadline_at;
+
+    if (hasStructurallyValidPending) {
       const newGeneration = row.generation + 1;
       const iso = nowDate.toISOString();
       const expiresAt = new Date(nowDate.getTime() + LEASE_TTL_MS).toISOString();
@@ -438,8 +464,8 @@ export function releaseEditLease(input: ActiveLeaseInput, now?: Date): LeaseResu
           `UPDATE document_edit_leases SET holder_user_id=?, holder_client_id=?, lease_token=?, generation=?, acquired_at=?, heartbeat_at=?, expires_at=?, takeover_request_id=NULL, takeover_user_id=NULL, takeover_client_id=NULL, takeover_lease_token=NULL, takeover_requested_at=NULL, takeover_deadline_at=NULL WHERE document_id=?`,
         )
         .run(row.takeover_user_id, row.takeover_client_id, row.takeover_lease_token, newGeneration, iso, iso, expiresAt, input.docId);
-      const updated = getLeaseRow(input.docId)!;
-      return toAcquiredResult(updated);
+      // Safe: do not expose new holder's token/clientId to old holder
+      return { state: "transferred" } as LeaseTransferredResult;
     }
 
     // Ordinary release: clear holder and pending but retain generation
@@ -448,13 +474,7 @@ export function releaseEditLease(input: ActiveLeaseInput, now?: Date): LeaseResu
         `UPDATE document_edit_leases SET holder_user_id=NULL, holder_client_id=NULL, lease_token=NULL, acquired_at=NULL, heartbeat_at=NULL, expires_at=NULL, takeover_request_id=NULL, takeover_user_id=NULL, takeover_client_id=NULL, takeover_lease_token=NULL, takeover_requested_at=NULL, takeover_deadline_at=NULL WHERE document_id=?`,
       )
       .run(input.docId);
-    // Return held? Spec says release clears fields. Return generic held with no holder? For consistency return acquired-like but with null holder. We'll return held with empty holder but prior generation retained for test check.
-    const updated = getLeaseRow(input.docId)!;
-    // For ordinary release we still retain generation; return state held? Actually spec: release clears holder. We'll return { state: "held" } without holder? But to make generation observable, we could return { state: "acquired" }? Let's return held with holder summary empty and expose generation via direct DB check in tests. Simpler return { state: "held", holder: {username:"", acquiredAt:"", heartbeatAt:""} }
-    return {
-      state: "held",
-      holder: holderSummaryFromRow(updated),
-    } as LeaseHeldResult;
+    return { state: "released" } as LeaseReleasedResult;
   });
 }
 
