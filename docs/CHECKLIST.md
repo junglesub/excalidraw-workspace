@@ -243,6 +243,6 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] Single-flight takeover polling (takeoverPollInFlightRef guard, all results/errors settled, no interval overlap)
 - [x] Thrown acquire 409 and latest-GET failure render safe readonly SSR scene with visible accessible error and existing retry button; no localStorage/edit until new acquire+GET
 - [x] pollEditTakeover expiry fix: expired holder returns EDIT_LEASE_LOST instead of acquired
-- [x] AdminMode propagated from page searchParams through EditorClient URLs, lease and fenced mutations (page, withAdminMode helper, client_save adminMode query)
+- [x] AdminMode: valid ADMIN + adminMode true => writable EDITOR meta + normal lease acquisition (fixed documentToMeta admin->VIEWER bug), propagated from page searchParams through EditorClient URLs, lease and fenced mutations
 - [x] Client regressions replaced with production-connected tests (lease_stabilization_regressions, handoff serialization) rather than copied constants
-- [x] Clean hook deps, dead refs/casts/EOF; full suite 167 tests, typecheck 0, git diff --check 078659a..HEAD 0
+- [x] Clean hook deps, dead refs/casts/EOF; full suite 169 tests, typecheck 0, git diff --check 078659a..HEAD 0
