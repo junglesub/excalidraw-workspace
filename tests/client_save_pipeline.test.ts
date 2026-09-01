@@ -137,6 +137,7 @@ describe("Client Save Pipeline", () => {
         docId: "doc_fail",
         scene,
         persistedFileIds,
+        lease: { clientId: "c-test", leaseToken: "t-test", generation: 1 },
         isManualSave: false,
       }),
     ).rejects.toThrow("Failed to upload attachment bad_file");
@@ -188,6 +189,7 @@ describe("Client Save Pipeline", () => {
       docId: "doc_saved",
       scene,
       persistedFileIds,
+      lease: { clientId: "c-test", leaseToken: "t-test", generation: 1 },
       isManualSave: true,
     });
 
@@ -413,6 +415,7 @@ describe("Client Save Pipeline", () => {
       docId: "doc-1",
       choice: "server",
       preserveDiscarded: true,
+      lease: { clientId: "c-test", leaseToken: "t-test", generation: 1 },
       expectedServerUpdatedAt: "initial-time",
       draft: { scene, updatedAt: 123 },
       persistedFileIds: new Set(),
@@ -430,10 +433,7 @@ describe("Client Save Pipeline", () => {
         { status: 200 },
       ),
     ) as unknown as typeof fetch;
-    await resolveClientRecovery({
-      docId: "doc-1",
-      choice: "server",
-      preserveDiscarded: false,
+    await resolveClientRecovery({ docId: "doc-1", choice: "server", preserveDiscarded: false, lease: { clientId: "c-test", leaseToken: "t-test", generation: 1 },
       expectedServerUpdatedAt: "initial-time",
       draft: {
         scene: {
@@ -471,10 +471,7 @@ describe("Client Save Pipeline", () => {
       ),
     ) as unknown as typeof fetch;
     await expect(
-      resolveClientRecovery({
-        docId: "doc-1",
-        choice: "client",
-        preserveDiscarded: false,
+      resolveClientRecovery({ docId: "doc-1", choice: "client", preserveDiscarded: false, lease: { clientId: "c-test", leaseToken: "t-test", generation: 1 },
         expectedServerUpdatedAt: "initial-time",
         draft: { scene: emptyScene(), updatedAt: 123 },
         persistedFileIds: new Set(),
@@ -493,10 +490,7 @@ describe("Client Save Pipeline", () => {
       new Response(JSON.stringify({ error: "snapshot failed" }), { status: 500 }),
     ) as unknown as typeof fetch;
     await expect(
-      resolveClientRecovery({
-        docId: "doc-1",
-        choice: "server",
-        preserveDiscarded: false,
+      resolveClientRecovery({ docId: "doc-1", choice: "server", preserveDiscarded: false, lease: { clientId: "c-test", leaseToken: "t-test", generation: 1 },
         expectedServerUpdatedAt: "initial-time",
         draft: { scene: emptyScene(), updatedAt: 123 },
         persistedFileIds: new Set(),

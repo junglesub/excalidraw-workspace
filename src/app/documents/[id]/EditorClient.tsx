@@ -225,6 +225,7 @@ export default function EditorClient({
           expectedServerUpdatedAt: draftConflict.serverUpdatedAt,
           draft: draftConflict.draft,
           persistedFileIds: persistedFileIdsRef.current,
+          lease: { clientId: "placeholder", leaseToken: "placeholder", generation: 1 },
         });
         if (!result.ok) {
           setDraftConflict((current) =>
@@ -294,6 +295,7 @@ export default function EditorClient({
             persistedFileIds: persistedFileIdsRef.current,
             isManualSave: currentSnapshot,
             snapshotDue: currentSnapshot,
+            lease: { clientId: "placeholder", leaseToken: "placeholder", generation: 1 },
           });
           lastResult = res;
 

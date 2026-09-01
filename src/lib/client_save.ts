@@ -1,10 +1,11 @@
-import type { ExcalidrawScene } from "./types";
+import type { EditLeaseCredentials, ExcalidrawScene } from "./types";
 import { blobToDataURL } from "./client_attachments";
 import {
   getActiveImageFileIds as sharedGetActiveImageFileIds,
   buildCompactScene as sharedBuildCompactScene,
   serializeForComparison as sharedSerializeForComparison,
 } from "./scene_normalize";
+import { ApiError } from "./client";
 
 export interface SaveDocumentOptions {
   docId: string;
@@ -14,6 +15,7 @@ export interface SaveDocumentOptions {
   snapshotDue?: boolean;
   signal?: AbortSignal;
   fetchFn?: typeof fetch;
+  lease: EditLeaseCredentials;
 }
 
 export interface SaveDocumentResult {
@@ -124,6 +126,7 @@ export interface ResolveClientRecoveryOptions {
   draft: LocalDraftEnvelope;
   persistedFileIds: Set<string>;
   fetchFn?: typeof fetch;
+  lease: EditLeaseCredentials;
 }
 
 export type ResolveClientRecoveryResult =
@@ -293,7 +296,7 @@ export async function generateThumbnailDataURL(scene: ExcalidrawScene): Promise<
  * 4. Sends compact scene JSON to /api/documents/{docId}/save (if manual) or /scene (if auto).
  */
 export async function saveDocumentScene(options: SaveDocumentOptions): Promise<SaveDocumentResult> {
-  const { docId, scene, persistedFileIds, isManualSave = false, snapshotDue = false, signal, fetchFn } = options;
+  const { docId, scene, persistedFileIds, isManualSave = false, snapshotDue = false, signal, fetchFn, lease } = options;
   const fetchImpl = fetchFn || (typeof window !== "undefined" ? window.fetch.bind(window) : globalThis.fetch);
 
   // 1. Pre-upload new attachments before saving scene JSON
@@ -310,8 +313,8 @@ export async function saveDocumentScene(options: SaveDocumentOptions): Promise<S
   const url = new URL(path, base);
 
   const payload = isManualSave
-    ? { scene: compactScene, ...(thumbnailBase64 ? { thumbnailBase64 } : {}) }
-    : { scene: compactScene, snapshot: snapshotDue, ...(thumbnailBase64 ? { thumbnailBase64 } : {}) };
+    ? { scene: compactScene, lease, ...(thumbnailBase64 ? { thumbnailBase64 } : {}) }
+    : { scene: compactScene, snapshot: snapshotDue, lease, ...(thumbnailBase64 ? { thumbnailBase64 } : {}) };
 
   const res = await fetchImpl(url.toString(), {
     method: isManualSave ? "POST" : "PUT",
@@ -322,8 +325,8 @@ export async function saveDocumentScene(options: SaveDocumentOptions): Promise<S
   });
 
   if (!res.ok) {
-    const errorData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-    throw new Error(errorData.error || `Save failed with HTTP ${res.status}`);
+    const errorData = await res.json().catch(() => ({ error: `HTTP ${res.status}` })) as { error?: string; code?: string };
+    throw new ApiError(res.status, errorData.error || `Save failed with HTTP ${res.status}`, errorData.code);
   }
 
   return (await res.json()) as SaveDocumentResult;
@@ -358,13 +361,14 @@ export async function resolveClientRecovery(
       expectedServerUpdatedAt: options.expectedServerUpdatedAt,
       clientScene: compactScene,
       clientUpdatedAt: options.draft.updatedAt,
+      lease: options.lease,
       ...(clientThumbnailBase64 ? { clientThumbnailBase64 } : {}),
     }),
   });
-  const data = (await response.json()) as ResolveClientRecoveryResult & { error?: string };
+  const data = (await response.json()) as ResolveClientRecoveryResult & { error?: string; code?: string };
   if (response.status === 409 && !data.ok && data.code === "SERVER_VERSION_CHANGED") {
     return data;
   }
-  if (!response.ok) throw new Error(data.error || `Recovery failed with HTTP ${response.status}`);
+  if (!response.ok) throw new ApiError(response.status, data.error || `Recovery failed with HTTP ${response.status}`, data.code);
   return data;
 }
