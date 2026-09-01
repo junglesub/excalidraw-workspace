@@ -182,7 +182,7 @@ export function AdminPanel({
                 <div className="text-xs text-gray-500">{d.deleted_at ? "In trash" : "Active"}</div>
               </div>
               <div className="mt-3 flex gap-2 items-center">
-                <Link href={`/documents/${d.id}`} className="text-sm text-blue-600 hover:underline">
+                <Link href={`/documents/${d.id}?adminMode=1`} className="text-sm text-blue-600 hover:underline">
                   Open
                 </Link>
                 {!d.deleted_at && (

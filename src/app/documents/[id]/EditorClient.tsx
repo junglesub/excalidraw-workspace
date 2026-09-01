@@ -109,6 +109,19 @@ export default function EditorClient({
   const hasWritePermission = currentPermission !== "VIEWER" && !isDeleted;
   const adminMode = initialAdminMode;
   const withAdminMode = (url: string) => adminMode ? `${url}${url.includes("?") ? "&" : "?"}adminMode=1` : url;
+  const bestEffortReleaseOnce = (creds: { clientId: string; leaseToken: string; generation: number } | null) => {
+    if (!creds || hasReleasedRef.current) return;
+    hasReleasedRef.current = true;
+    const url = withAdminMode(`/api/documents/${encodeURIComponent(docId)}/lease`);
+    const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
+    try {
+      if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+        navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
+      } else {
+        fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, credentials: "include", keepalive: true } as RequestInit);
+      }
+    } catch {}
+  };
   // lease mode state
   const [leaseMode, setLeaseMode] = useState<"viewer" | "acquiring" | "blocked" | "active" | "handoff" | "readonly" | "lost">(
     hasWritePermission ? "acquiring" : "viewer"
@@ -126,6 +139,7 @@ export default function EditorClient({
   const takeoverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const takeoverPollInFlightRef = useRef(false);
   const isRestoringRef = useRef(false);
+  const hasReleasedRef = useRef(false);
 
   useEffect(() => { leaseModeRef.current = leaseMode; }, [leaseMode]);
 
@@ -325,10 +339,16 @@ export default function EditorClient({
         const leaseToken = crypto.randomUUID();
         leaseTokenRef.current = leaseToken;
         const result = await acquireLease(docId, { clientId, leaseToken }, undefined, adminMode);
-        if (cancelled) return;
+        if (cancelled) {
+          if (result.state === "acquired") {
+            bestEffortReleaseOnce({ clientId, leaseToken, generation: result.generation });
+          }
+          return;
+        }
         if (result.state === "acquired") {
           const creds = { clientId, leaseToken, generation: result.generation };
           leaseCredentialsRef.current = creds;
+          hasReleasedRef.current = false;
           await finalizeAcquisition(creds);
         } else if (result.state === "held") {
           setLeaseHolder(result.holder);
@@ -336,35 +356,20 @@ export default function EditorClient({
           setRecoveryReady(true);
         }
       } catch (err) {
-        if (err instanceof ApiError && (err.code === "EDIT_LEASE_HELD" || err.status === 409)) {
-          setLeaseMode("blocked");
-        } else {
-          sceneRef.current = initialScene;
-          lastSavedContentRef.current = serializeSceneForComparison(initialScene);
-          persistedFileIdsRef.current = new Set(Object.keys(initialScene.files || {}));
-          setInitialCanvasScene(initialScene);
-          setCanvasKey((k) => k + 1);
-          setLeaseError(err instanceof Error ? err.message : "Failed to acquire lease. Please retry takeover.");
-          setLeaseMode("readonly");
-        }
+        sceneRef.current = initialScene;
+        lastSavedContentRef.current = serializeSceneForComparison(initialScene);
+        persistedFileIdsRef.current = new Set(Object.keys(initialScene.files || {}));
+        setInitialCanvasScene(initialScene);
+        setCanvasKey((k) => k + 1);
+        setLeaseError(err instanceof Error ? err.message : "Failed to acquire lease. Please retry takeover.");
+        setLeaseMode("readonly");
         setRecoveryReady(true);
       }
     };
     void doAcquire();
     return () => {
       cancelled = true;
-      const creds = leaseCredentialsRef.current;
-      if (creds) {
-        const url = withAdminMode(`/api/documents/${encodeURIComponent(docId)}/lease`);
-        const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
-        try {
-          if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-            navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
-          } else {
-            fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, credentials: "include", keepalive: true } as RequestInit);
-          }
-        } catch {}
-      }
+      bestEffortReleaseOnce(leaseCredentialsRef.current);
     };
   }, [docId, hasWritePermission, finalizeAcquisition]);
 
@@ -401,6 +406,7 @@ export default function EditorClient({
       if (result.state === "acquired") {
         const creds = { clientId, leaseToken, generation: result.generation };
         leaseCredentialsRef.current = creds;
+        hasReleasedRef.current = false;
         await finalizeAcquisition(creds);
         setLeaseBusy(false);
         return;
@@ -419,6 +425,7 @@ export default function EditorClient({
               if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
               const creds = { clientId, leaseToken, generation: pollRes.generation };
               leaseCredentialsRef.current = creds;
+              hasReleasedRef.current = false;
               await finalizeAcquisition(creds);
               setLeaseBusy(false);
             } else if (pollRes.state === "takeover_pending") {
@@ -439,6 +446,10 @@ export default function EditorClient({
               setLeaseBusy(false);
             } else if (err instanceof ApiError && err.code === "TAKEOVER_IN_PROGRESS") {
               setLeaseError("Another takeover is in progress. Please try again.");
+              if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
+              setLeaseBusy(false);
+            } else {
+              setLeaseError(err instanceof Error ? err.message : "Takeover failed. Please retry.");
               if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
               setLeaseBusy(false);
             }
@@ -556,24 +567,13 @@ export default function EditorClient({
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
       if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
       if (takeoverPollRef.current) clearInterval(takeoverPollRef.current);
-      const creds = leaseCredentialsRef.current;
-      if (creds) {
-        const url = withAdminMode(`/api/documents/${encodeURIComponent(docId)}/lease`);
-        const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
-        try {
-          if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-            navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
-          } else {
-            fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, credentials: "include", keepalive: true } as RequestInit);
-          }
-        } catch {}
-      }
+      bestEffortReleaseOnce(leaseCredentialsRef.current);
     };
   }, [docId]);
 
   const executeSave = useCallback(
     async (forceSnapshot: boolean) => {
-      if (!canEditCanvas || (!isDirtyRef.current && !forceSnapshot)) return;
+      if (isRestoringRef.current || !canEditCanvas || (!isDirtyRef.current && !forceSnapshot)) return;
       if (isSavingRef.current) {
         queuedSaveRef.current = {
           forceSnapshot: forceSnapshot || queuedSaveRef.current?.forceSnapshot || false,
@@ -716,7 +716,7 @@ export default function EditorClient({
   );
 
   const manualSave = useCallback(async () => {
-    if (!canEditCanvas) return;
+    if (isRestoringRef.current || !canEditCanvas) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     await executeSave(true);
   }, [canEditCanvas, executeSave]);
@@ -767,30 +767,9 @@ export default function EditorClient({
     };
   }, [canEditCanvas, docId]);
 
-  // Release best-effort on pagehide
   useEffect(() => {
     const handlePageHide = () => {
-      const creds = leaseCredentialsRef.current;
-      if (!creds) return;
-      const base = typeof window !== "undefined" && window.location ? window.location.origin : "";
-      const url = withAdminMode(`${base}/api/documents/${encodeURIComponent(docId)}/lease`);
-      const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
-      try {
-        if (navigator.sendBeacon) {
-          const blob = new Blob([payload], { type: "application/json" });
-          navigator.sendBeacon(url, blob);
-        } else {
-          fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: payload,
-            credentials: "include",
-            keepalive: true,
-          });
-        }
-      } catch {
-        // ignore
-      }
+      bestEffortReleaseOnce(leaseCredentialsRef.current);
     };
     window.addEventListener("pagehide", handlePageHide);
     return () => window.removeEventListener("pagehide", handlePageHide);
