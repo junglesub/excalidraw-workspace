@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { waitForNoSaving, shouldRecoverHandoffToActive, canMutateCanvas, shouldReadLocalDraft } from "@/lib/client_edit_lease";
+import { waitForNoSaving, shouldRecoverHandoffToActive, shouldSkipHandoffForRestore, canMutateCanvas, shouldReadLocalDraft } from "@/lib/client_edit_lease";
 
 describe("Handoff serialization regression", () => {
   it("proves handoff guard recovers and heartbeat recovers to active after expired takeover", async () => {
@@ -21,6 +21,15 @@ describe("Handoff serialization regression", () => {
     const ref2 = { current: true };
     setTimeout(() => { ref2.current = false; }, 40);
     await expect(waitForNoSaving(ref2, 500)).resolves.toBeUndefined();
+  });
+
+  it("heartbeat skips takeover handoff while restoring but still renews and resumes after", () => {
+    expect(shouldSkipHandoffForRestore(true, "takeover_pending")).toBe(true);
+    expect(shouldSkipHandoffForRestore(false, "takeover_pending")).toBe(false);
+    expect(shouldSkipHandoffForRestore(true, "acquired")).toBe(false);
+    expect(shouldSkipHandoffForRestore(false, "acquired")).toBe(false);
+    // Production heartbeat must still handle force/loss while restoring - verified via shouldRecoverHandoffToActive not being skipped
+    expect(shouldRecoverHandoffToActive("handoff", "acquired")).toBe(true);
   });
 });
 

@@ -19,7 +19,7 @@ import {
   sceneMatchesLastSaved,
   getManualSaveStatus,
 } from "@/lib/client_save";
-import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, waitForNoSaving, shouldRecoverHandoffToActive, credentialKey, dispatchRelease } from "@/lib/client_edit_lease";
+import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, waitForNoSaving, shouldRecoverHandoffToActive, shouldSkipHandoffForRestore, credentialKey, dispatchRelease } from "@/lib/client_edit_lease";
 import type { EditorLeaseMode } from "@/lib/client_edit_lease";
 import type { EditLeaseCredentials, ExcalidrawScene, Permission, LeaseHolderSummary } from "@/lib/types";
 import type { LocalDraftEnvelope } from "@/lib/client_save";
@@ -476,6 +476,7 @@ export default function EditorClient({
       try {
         const res = await heartbeatLease(docId, creds, undefined, adminMode);
         if (res.state === "takeover_pending") {
+          if (shouldSkipHandoffForRestore(isRestoringRef.current, res.state)) return;
           if (handoffGuardRef.current) return;
           handoffGuardRef.current = true;
           setLeaseMode("handoff");

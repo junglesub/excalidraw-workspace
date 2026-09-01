@@ -245,4 +245,4 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] pollEditTakeover expiry fix: expired holder returns EDIT_LEASE_LOST instead of acquired
 - [x] AdminMode propagated from page searchParams through EditorClient URLs, lease and fenced mutations (page, withAdminMode helper, client_save adminMode query)
 - [x] Client regressions replaced with production-connected tests (lease_stabilization_regressions, handoff serialization) rather than copied constants
-- [x] Clean hook deps, dead refs/casts/EOF; full suite 165 tests, typecheck 0
+- [x] Clean hook deps, dead refs/casts/EOF; full suite 167 tests, typecheck 0, git diff --check 078659a..HEAD 0

@@ -151,6 +151,10 @@ export function shouldRecoverHandoffToActive(currentMode: EditorLeaseMode, heart
   return currentMode === "handoff" && heartbeatState === "acquired";
 }
 
+export function shouldSkipHandoffForRestore(isRestoring: boolean, heartbeatState: string): boolean {
+  return isRestoring && heartbeatState === "takeover_pending";
+}
+
 export function credentialKey(creds: EditLeaseCredentials): string {
   return JSON.stringify([creds.clientId, creds.leaseToken, creds.generation]);
 }
