@@ -246,3 +246,10 @@ Step-by-step implementation and quality verification checklist based on the `imp
 - [x] AdminMode: valid ADMIN + adminMode true => writable EDITOR meta + normal lease acquisition (fixed documentToMeta admin->VIEWER bug), propagated from page searchParams through EditorClient URLs, lease and fenced mutations
 - [x] Client regressions replaced with production-connected tests (lease_stabilization_regressions, handoff serialization) rather than copied constants
 - [x] Clean hook deps, dead refs/casts/EOF; full suite 169 tests, typecheck 0, git diff --check 078659a..HEAD 0
+
+## 18. Re-entry False-Conflict Fix (2026-09-01)
+
+- [x] Root cause: pagehide release is best-effort and often does not reach the server on browser close, so the lease stays held for the full 90s TTL; `acquireEditLease` treated any unexpired lease as a genuine conflict regardless of holder heartbeat liveness, so re-entry/new entry showed `already being edited` with no active editor
+- [x] Minimal fix in `src/lib/edit_lease.ts` `acquireEditLease`: same-user re-acquire allowed only when the holder heartbeat is stale (> `TAKEOVER_TIMEOUT_MS` 10s, consistent with forced-takeover semantics) and no structurally valid pending takeover exists; generation advances on stale re-acquire for fencing
+- [x] Global one-editor-per-document lease preserved: a second simultaneously open tab/session of the same user with a fresh heartbeat still receives `held` (conflict modal + takeover path), per spec scope "across users, browsers, devices, and tabs"
+- [x] Regression `tests/reentry_lease.test.ts`: stale-heartbeat re-entry acquires (generation+1), fresh-heartbeat second tab still held with holder lease untouched, different-user held, pending takeover not clobbered, expired lease acquires; `tests/edit_lease.test.ts` unchanged (all pass)

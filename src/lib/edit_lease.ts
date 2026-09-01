@@ -212,7 +212,31 @@ export function acquireEditLease(input: LeaseIdentityInput, now?: Date): LeaseRe
       return toAcquiredResult(updated);
     }
 
-    // Held by another
+    // Same-user re-entry after close/reopen: the pagehide release is best-effort and
+    // may not reach the server on browser close, leaving this user's own lease held
+    // with no active editor heartbeating. Re-acquire immediately only when the
+    // holder heartbeat is stale (no live tab), preserving the genuine conflict for a
+    // second simultaneously open tab of the same user (spec: one editor across tabs)
+    // and for any structurally valid pending takeover.
+    if (row.holder_user_id === input.userId) {
+      const lastBeat = row.heartbeat_at ? Date.parse(row.heartbeat_at) : NaN;
+      const heartbeatStale = Number.isNaN(lastBeat) || nowDate.getTime() - lastBeat > TAKEOVER_TIMEOUT_MS;
+      const pendingBlocked = !!row.takeover_request_id && !isTakeoverExpired(row, nowDate);
+      if (heartbeatStale && !pendingBlocked) {
+        const generation = row.generation + 1;
+        const iso = nowDate.toISOString();
+        const expiresAt = new Date(nowDate.getTime() + LEASE_TTL_MS).toISOString();
+        getDb()
+          .prepare(
+            `UPDATE document_edit_leases SET holder_user_id=?, holder_client_id=?, lease_token=?, generation=?, acquired_at=?, heartbeat_at=?, expires_at=?, takeover_request_id=NULL, takeover_user_id=NULL, takeover_client_id=NULL, takeover_lease_token=NULL, takeover_requested_at=NULL, takeover_deadline_at=NULL WHERE document_id=?`,
+          )
+          .run(input.userId, input.clientId, input.leaseToken, generation, iso, iso, expiresAt, input.docId);
+        const updated = getLeaseRow(input.docId)!;
+        return toAcquiredResult(updated);
+      }
+    }
+
+    // Held by an active editor (another user, or a second live tab of the same user)
     return {
       state: "held",
       holder: holderSummaryFromRow(row),
