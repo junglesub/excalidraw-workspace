@@ -322,22 +322,6 @@ export default function EditorClient({
   }, [docId, draftKey, initialScene, setStatus]);
 
   const coordinatorRef = useRef<InitialLeaseCoordinator | null>(null);
-  if (!coordinatorRef.current || coordinatorRef.current.getDocId() !== docId) {
-    if (coordinatorRef.current) {
-      coordinatorRef.current.dispose();
-    }
-    coordinatorRef.current = new InitialLeaseCoordinator({
-      docId,
-      clientId: () => {
-        const id = getEditorContextId();
-        leaseClientIdRef.current = id;
-        return id;
-      },
-      prior: (cid) => readStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, cid),
-      adminMode,
-      releaseFn: bestEffortReleaseOnce,
-    });
-  }
 
   // Initial lease gate
   useEffect(() => {
@@ -351,8 +335,21 @@ export default function EditorClient({
 
     setLeaseMode("acquiring");
 
-    const coordinator = coordinatorRef.current;
-    if (!coordinator) return;
+    let coordinator = coordinatorRef.current;
+    if (!coordinator || coordinator.getDocId() !== docId) {
+      coordinator = new InitialLeaseCoordinator({
+        docId,
+        clientId: () => {
+          const id = getEditorContextId();
+          leaseClientIdRef.current = id;
+          return id;
+        },
+        prior: (cid) => readStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, cid),
+        adminMode,
+        releaseFn: bestEffortReleaseOnce,
+      });
+      coordinatorRef.current = coordinator;
+    }
 
     const unsubscribe = coordinator.subscribe({
       onAcquired: async (creds) => {
@@ -366,7 +363,7 @@ export default function EditorClient({
         await finalizeAcquisition(creds);
       },
       onHeld: (holder, prior) => {
-        const candidate = coordinator.getCandidate();
+        const candidate = coordinator!.getCandidate();
         const cid = candidate ? candidate.clientId : leaseClientIdRef.current;
         clearStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, cid, prior ?? undefined);
         setLeaseHolder(holder);

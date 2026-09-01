@@ -289,6 +289,11 @@ export interface InitialLeaseCoordinatorOptions {
   releaseFn: (creds: EditLeaseCredentials) => void;
 }
 
+type SettledResult =
+  | { state: "acquired"; creds: EditLeaseCredentials }
+  | { state: "held"; holder: LeaseHolderSummaryWire; prior: StoredLeaseCredentials | null }
+  | { state: "error"; error: unknown };
+
 export class InitialLeaseCoordinator {
   private readonly docId: string;
   private readonly adminMode?: boolean;
@@ -306,8 +311,7 @@ export class InitialLeaseCoordinator {
   private candidate: InitialLeaseCandidate | null = null;
   private flightPromise: Promise<LeaseResponse> | null = null;
   private activeSubscriber: InitialLeaseSubscriber | null = null;
-  private finalized = false;
-  private acquiredCreds: EditLeaseCredentials | null = null;
+  private settledResult: SettledResult | null = null;
   private isReleased = false;
 
   constructor(options: InitialLeaseCoordinatorOptions) {
@@ -332,8 +336,8 @@ export class InitialLeaseCoordinator {
     return this.flightPromise;
   }
 
-  public isFinalized(): boolean {
-    return this.finalized;
+  public isSettled(): boolean {
+    return this.settledResult !== null;
   }
 
   private resolveCandidate(): InitialLeaseCandidate {
@@ -349,11 +353,33 @@ export class InitialLeaseCoordinator {
     return this.candidate;
   }
 
+  private deliverSettled(subscriber: InitialLeaseSubscriber, result: SettledResult): void {
+    if (result.state === "acquired") {
+      Promise.resolve(subscriber.onAcquired(result.creds)).catch((err) => {
+        subscriber.onError(err);
+      });
+    } else if (result.state === "held") {
+      subscriber.onHeld(result.holder, result.prior);
+    } else if (result.state === "error") {
+      subscriber.onError(result.error);
+    }
+  }
+
   public subscribe(subscriber: InitialLeaseSubscriber): () => void {
+    // If a previously completed flight was released, reset so new subscription acquires fresh
+    if (this.isReleased) {
+      this.candidate = null;
+      this.flightPromise = null;
+      this.settledResult = null;
+      this.isReleased = false;
+    }
+
     this.activeSubscriber = subscriber;
     const currentSubscriber = subscriber;
 
-    if (!this.flightPromise) {
+    if (this.settledResult) {
+      this.deliverSettled(subscriber, this.settledResult);
+    } else if (!this.flightPromise) {
       const candidate = this.resolveCandidate();
       const payload: LeaseCandidate & { priorLeaseToken?: string; priorGeneration?: number } = {
         clientId: candidate.clientId,
@@ -368,41 +394,33 @@ export class InitialLeaseCoordinator {
       this.flightPromise = promise;
 
       promise.then(
-        async (result) => {
-          if (this.activeSubscriber) {
-            this.finalized = true;
-            if (result.state === "acquired") {
-              const creds: EditLeaseCredentials = {
-                clientId: candidate.clientId,
-                leaseToken: candidate.leaseToken,
-                generation: result.generation,
-              };
-              this.acquiredCreds = creds;
-              try {
-                await this.activeSubscriber.onAcquired(creds);
-              } catch (err) {
-                this.activeSubscriber.onError(err);
-              }
-            } else if (result.state === "held") {
-              this.activeSubscriber.onHeld(result.holder, candidate.prior);
-            }
-          } else {
-            // Cancelled before response arrived (genuine unmount)
-            if (result.state === "acquired") {
-              const creds: EditLeaseCredentials = {
-                clientId: candidate.clientId,
-                leaseToken: candidate.leaseToken,
-                generation: result.generation,
-              };
-              this.acquiredCreds = creds;
+        (result) => {
+          if (result.state === "acquired") {
+            const creds: EditLeaseCredentials = {
+              clientId: candidate.clientId,
+              leaseToken: candidate.leaseToken,
+              generation: result.generation,
+            };
+            const settled: SettledResult = { state: "acquired", creds };
+            this.settledResult = settled;
+            if (this.activeSubscriber) {
+              this.deliverSettled(this.activeSubscriber, settled);
+            } else {
               this.releaseOnce(creds);
+            }
+          } else if (result.state === "held") {
+            const settled: SettledResult = { state: "held", holder: result.holder, prior: candidate.prior };
+            this.settledResult = settled;
+            if (this.activeSubscriber) {
+              this.deliverSettled(this.activeSubscriber, settled);
             }
           }
         },
         (err) => {
+          const settled: SettledResult = { state: "error", error: err };
+          this.settledResult = settled;
           if (this.activeSubscriber) {
-            this.finalized = true;
-            this.activeSubscriber.onError(err);
+            this.deliverSettled(this.activeSubscriber, settled);
           }
         }
       );
@@ -412,8 +430,8 @@ export class InitialLeaseCoordinator {
       if (this.activeSubscriber === currentSubscriber) {
         this.activeSubscriber = null;
       }
-      if (this.finalized && this.acquiredCreds) {
-        this.releaseOnce(this.acquiredCreds);
+      if (this.settledResult?.state === "acquired") {
+        this.releaseOnce(this.settledResult.creds);
       }
     };
   }
@@ -430,9 +448,9 @@ export class InitialLeaseCoordinator {
 
   public dispose(): void {
     this.activeSubscriber = null;
-    if (this.acquiredCreds) {
-      this.releaseOnce(this.acquiredCreds);
+    if (this.settledResult?.state === "acquired") {
+      this.releaseOnce(this.settledResult.creds);
     }
+    this.isReleased = true;
   }
 }
-
