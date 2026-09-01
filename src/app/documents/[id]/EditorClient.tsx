@@ -19,7 +19,7 @@ import {
   sceneMatchesLastSaved,
   getManualSaveStatus,
 } from "@/lib/client_save";
-import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, waitForNoSaving } from "@/lib/client_edit_lease";
+import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, waitForNoSaving, shouldRecoverHandoffToActive } from "@/lib/client_edit_lease";
 import type { EditorLeaseMode } from "@/lib/client_edit_lease";
 import type { EditLeaseCredentials, ExcalidrawScene, Permission, LeaseHolderSummary } from "@/lib/types";
 import type { LocalDraftEnvelope } from "@/lib/client_save";
@@ -117,6 +117,7 @@ export default function EditorClient({
   const leaseTokenRef = useRef<string | null>(null);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const handoffGuardRef = useRef(false);
+  const heartbeatInFlightRef = useRef(false);
   const takeoverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const canEditCanvas = canMutateCanvas(leaseMode as unknown as "active" | "viewer" | "blocked" | "readonly" | "handoff" | "lost" | "acquiring");
@@ -285,11 +286,16 @@ export default function EditorClient({
     } catch (err) {
       try { await releaseLease(docId, creds); } catch {}
       leaseCredentialsRef.current = null;
-      setLeaseError(err instanceof Error ? err.message : "Failed to load latest document. Please retry.");
-      setLeaseMode("blocked");
+      sceneRef.current = initialScene;
+      lastSavedContentRef.current = serializeSceneForComparison(initialScene);
+      persistedFileIdsRef.current = new Set(Object.keys(initialScene.files || {}));
+      setInitialCanvasScene(initialScene);
+      setCanvasKey((k) => k + 1);
+      setLeaseError(err instanceof Error ? err.message : "Failed to load latest document. Please retry takeover.");
+      setLeaseMode("readonly");
       setRecoveryReady(true);
     }
-  }, [docId, draftKey, setStatus]);
+  }, [docId, draftKey, initialScene, setStatus]);
 
   // Initial lease gate
   useEffect(() => {
@@ -338,7 +344,7 @@ export default function EditorClient({
     };
     void doAcquire();
     return () => { cancelled = true; };
-  }, [docId, hasWritePermission, draftKey, initialScene, initialUpdatedAt, setStatus]);
+  }, [docId, hasWritePermission, finalizeAcquisition]);
 
   const handleOpenReadOnly = useCallback(async () => {
     setLeaseBusy(true);
@@ -424,6 +430,8 @@ export default function EditorClient({
     if (!creds) return;
     if (heartbeatTimerRef.current) return;
     heartbeatTimerRef.current = setInterval(async () => {
+      if (heartbeatInFlightRef.current) return;
+      heartbeatInFlightRef.current = true;
       try {
         const res = await heartbeatLease(docId, creds);
         if (res.state === "takeover_pending") {
@@ -434,9 +442,8 @@ export default function EditorClient({
             clearTimeout(debounceRef.current);
             debounceRef.current = null;
           }
-          await waitForNoSaving(isSavingRef);
-          // Ensure latest scene is confirmed final write before release
           try {
+            await waitForNoSaving(isSavingRef);
             await saveDocumentScene({
               docId,
               scene: sceneRef.current,
@@ -457,15 +464,12 @@ export default function EditorClient({
             setLeaseMode("readonly");
             leaseCredentialsRef.current = null;
             if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; }
-            handoffGuardRef.current = false;
           } catch (e) {
             if (e instanceof ApiError && e.code === "EDIT_LEASE_LOST") {
               const isDirty = isDirtyRef.current;
               void handleLeaseLost(isDirty);
-              handoffGuardRef.current = false;
             } else {
               setStatus("Failed to flush changes for handover; will retry until takeover completes.", "error");
-              // Transition to read-only with latest server scene while retaining draft on failure/race
               try {
                 const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
                 sceneRef.current = data.scene;
@@ -473,11 +477,13 @@ export default function EditorClient({
                 setInitialCanvasScene(data.scene);
                 setCanvasKey((k) => k + 1);
               } catch {}
-              // Keep handoff but allow next heartbeat to detect forced loss; bounded retry without SSE
-              handoffGuardRef.current = false;
-              // If forced transfer already happened, next heartbeat will trigger EDIT_LEASE_LOST
             }
+          } finally {
+            handoffGuardRef.current = false;
           }
+        } else if (shouldRecoverHandoffToActive(leaseMode as EditorLeaseMode, res.state)) {
+          setLeaseMode("active");
+          handoffGuardRef.current = false;
         }
       } catch (err) {
         if (err instanceof ApiError && (err.code === "EDIT_LEASE_LOST" || err.status === 403)) {
@@ -485,6 +491,8 @@ export default function EditorClient({
           void handleLeaseLost(isDirty);
           handoffGuardRef.current = false;
         }
+      } finally {
+        heartbeatInFlightRef.current = false;
       }
     }, 2000);
     return () => {
@@ -492,7 +500,6 @@ export default function EditorClient({
     };
   }, [leaseMode, docId, draftKey, handleLeaseLost, setStatus]);
 
-  // Cleanup heartbeat when leaving active/handoff
   useEffect(() => {
     if (leaseMode !== "active" && leaseMode !== "handoff") {
       if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; }
@@ -500,8 +507,6 @@ export default function EditorClient({
     }
   }, [leaseMode]);
 
-  // Centralize EDIT_LEASE_LOST handling for save/recovery/restore via wrapper?
-  // We'll handle in respective callbacks by checking ApiError code.
 
   const handleLeaseLostForMutation = useCallback(async (err: unknown) => {
     if (err instanceof ApiError && err.code === "EDIT_LEASE_LOST") {
