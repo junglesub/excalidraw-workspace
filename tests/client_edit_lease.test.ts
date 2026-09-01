@@ -199,7 +199,20 @@ describe("Per-context identity and stored credential helpers", () => {
     expect(readStoredLeaseCredentials(storage, "doc1", "c1")).toBeNull();
     expect(readStoredLeaseCredentials(storage, "doc1", "c2")).toBeNull();
     storeLeaseCredentials(storage, "doc1", "c1", { leaseToken: "t1", generation: 1 });
-    clearStoredLeaseCredentials(storage, "doc1", "c1");
+    clearStoredLeaseCredentials(storage, "doc1", "c1", { leaseToken: "t1", generation: 1 });
+    expect(readStoredLeaseCredentials(storage, "doc1", "c1")).toBeNull();
+  });
+
+  it("compare-and-clear preserves a newer credential and removes a matching one", () => {
+    const storage = makeStorage();
+    // A same-context rotation stored the newest server-issued credentials under the shared key.
+    storeLeaseCredentials(storage, "doc1", "c1", { leaseToken: "t2", generation: 2 });
+    // A late callback from the previous page instance (fenced to EDIT_LEASE_LOST) attempts to clear
+    // with its stale credential; it must NOT remove the newer stored credential.
+    clearStoredLeaseCredentials(storage, "doc1", "c1", { leaseToken: "t1", generation: 1 });
+    expect(readStoredLeaseCredentials(storage, "doc1", "c1")).toEqual({ leaseToken: "t2", generation: 2 });
+    // Clearing with the matching (newer) credential proves removal, preserving valid cleanup.
+    clearStoredLeaseCredentials(storage, "doc1", "c1", { leaseToken: "t2", generation: 2 });
     expect(readStoredLeaseCredentials(storage, "doc1", "c1")).toBeNull();
   });
 });

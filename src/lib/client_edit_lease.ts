@@ -171,9 +171,18 @@ export function storeLeaseCredentials(storage: Storage, docId: string, contextId
   }
 }
 
-export function clearStoredLeaseCredentials(storage: Storage, docId: string, contextId: string | null): void {
+export function clearStoredLeaseCredentials(storage: Storage, docId: string, contextId: string | null, expected?: StoredLeaseCredentials): void {
   if (!contextId) return;
+  // Compare-and-clear: only remove the stored value when it still exactly matches the caller's
+  // credential (token AND generation). A same-context rotation stores the newer server-issued
+  // credential under this same key, so a late callback from the previous page instance that was
+  // fenced (e.g. to EDIT_LEASE_LOST) must never delete the newer credential. Without an expected
+  // credential we cannot prove the stored value was issued to us, so we do not delete (safe).
+  if (!expected) return;
   try {
+    const stored = readStoredLeaseCredentials(storage, docId, contextId);
+    if (!stored) return;
+    if (stored.leaseToken !== expected.leaseToken || stored.generation !== expected.generation) return;
     storage.removeItem(leaseCredentialsKey(docId, contextId));
   } catch {
     // ignore

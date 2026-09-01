@@ -236,8 +236,14 @@ export default function EditorClient({
       debounceRef.current = null;
     }
     handoffGuardRef.current = false;
+    const lostCreds = leaseCredentialsRef.current;
     leaseCredentialsRef.current = null;
-    clearStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, leaseClientIdRef.current);
+    clearStoredLeaseCredentials(
+      sessionStorage as unknown as Storage,
+      docId,
+      leaseClientIdRef.current,
+      lostCreds ? { leaseToken: lostCreds.leaseToken, generation: lostCreds.generation } : undefined,
+    );
     // Do not clear localStorage draft
     try {
       const data = await api<{ document: { title: string }; scene: ExcalidrawScene; permission: Permission }>(withAdminMode(`/api/documents/${docId}`));
@@ -360,7 +366,7 @@ export default function EditorClient({
           // Held: either another screen owns the lease, or our prior credentials did
           // not prove same-context re-entry. The conflict modal with the takeover path
           // is the correct response in both cases.
-          clearStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId);
+          clearStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId, prior ?? undefined);
           setLeaseHolder(result.holder);
           setLeaseMode("blocked");
           setRecoveryReady(true);

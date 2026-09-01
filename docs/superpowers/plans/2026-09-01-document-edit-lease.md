@@ -377,7 +377,7 @@ export class ApiError extends Error {
 export function getEditorContextId(): string;
 export function readStoredLeaseCredentials(storage: Storage, docId: string, contextId: string): { leaseToken: string; generation: number } | null;
 export function storeLeaseCredentials(storage: Storage, docId: string, contextId: string, creds: { leaseToken: string; generation: number }): void;
-export function clearStoredLeaseCredentials(storage: Storage, docId: string, contextId: string | null): void;
+export function clearStoredLeaseCredentials(storage: Storage, docId: string, contextId: string | null, expected?: StoredLeaseCredentials): void;
 export function acquireLease(docId: string, identity: LeaseCandidate & { priorLeaseToken?: string; priorGeneration?: number }, fetchFn?: typeof fetch): Promise<LeaseResponse>;
 export function acquireLease(docId: string, identity: LeaseCandidate, fetchFn?: typeof fetch): Promise<LeaseResponse>;
 export function heartbeatLease(docId: string, lease: EditLeaseCredentials, fetchFn?: typeof fetch): Promise<LeaseResponse>;
