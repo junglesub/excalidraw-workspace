@@ -374,7 +374,11 @@ export class ApiError extends Error {
   constructor(public status: number, message: string, public code?: string) { super(message); }
 }
 
-export function getLeaseClientId(storage: Storage): string;
+export function getEditorContextId(): string;
+export function readStoredLeaseCredentials(storage: Storage, docId: string, contextId: string): { leaseToken: string; generation: number } | null;
+export function storeLeaseCredentials(storage: Storage, docId: string, contextId: string, creds: { leaseToken: string; generation: number }): void;
+export function clearStoredLeaseCredentials(storage: Storage, docId: string, contextId: string | null): void;
+export function acquireLease(docId: string, identity: LeaseCandidate & { priorLeaseToken?: string; priorGeneration?: number }, fetchFn?: typeof fetch): Promise<LeaseResponse>;
 export function acquireLease(docId: string, identity: LeaseCandidate, fetchFn?: typeof fetch): Promise<LeaseResponse>;
 export function heartbeatLease(docId: string, lease: EditLeaseCredentials, fetchFn?: typeof fetch): Promise<LeaseResponse>;
 export function requestTakeover(docId: string, candidate: LeaseCandidate, fetchFn?: typeof fetch): Promise<LeaseResponse>;
@@ -406,7 +410,7 @@ Change `api()` and `apiForm()` to throw `ApiError` while keeping their existing 
 
 - [ ] **Step 4: Implement the thin lease transport module**
 
-Use `sessionStorage` only for `clientId`. Generate candidate lease tokens and takeover request IDs with `crypto.randomUUID()` in the calling editor instance; do not store active lease tokens in localStorage or expose them in messages/logs.
+Use the per-context `window.name` id for the `clientId` and persist the previous server-issued lease credentials (token + generation) in `sessionStorage` keyed by `{docId}:{contextId}`; never store active candidate lease tokens in localStorage or expose them in messages/logs. Generate candidate lease tokens and takeover request IDs with `crypto.randomUUID()` in the calling editor instance.
 
 Keep transport functions stateless. They send one HTTP request and return a typed response; timers and UI state belong to `EditorClient`.
 
@@ -535,7 +539,7 @@ For VIEWER/deleted, enter `viewer` and preserve the existing server-only/localSt
 
 For writable access:
 
-1. create/reuse sessionStorage client ID and a fresh in-memory candidate token;
+1. create/reuse the per-context `window.name` id, read any stored prior lease credentials for `{docId}:{contextId}`, and create a fresh in-memory candidate token;
 2. enter `acquiring` and call acquire;
 3. on success, store credentials in a ref, fetch `/api/documents/{id}` for the latest scene, then run the existing draft decision;
 4. on `EDIT_LEASE_HELD`, enter `blocked` and render `EditLeaseConflictModal`;

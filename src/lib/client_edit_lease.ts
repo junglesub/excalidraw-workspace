@@ -60,16 +60,6 @@ export interface TakeoverPoll {
   generation?: number;
 }
 
-export const LEASE_CLIENT_ID_KEY = "excalidraw_client_id";
-
-export function getLeaseClientId(storage: Storage): string {
-  const existing = storage.getItem(LEASE_CLIENT_ID_KEY);
-  if (existing && existing.length > 0 && existing.length <= 256) return existing;
-  const newId = crypto.randomUUID();
-  storage.setItem(LEASE_CLIENT_ID_KEY, newId);
-  return newId;
-}
-
 function getBase(): string {
   if (typeof window !== "undefined" && window.location && window.location.origin) return window.location.origin;
   return "http://localhost";
@@ -107,64 +97,89 @@ async function leaseFetchWithHeld(docId: string, body: Record<string, unknown>, 
   return data as LeaseResponse;
 }
 
-export function acquireLease(docId: string, identity: LeaseCandidate, fetchFn?: typeof fetch, adminMode?: boolean, options?: { reentry?: boolean }): Promise<LeaseResponse> {
+export function acquireLease(docId: string, identity: LeaseCandidate & { priorLeaseToken?: string; priorGeneration?: number }, fetchFn?: typeof fetch, adminMode?: boolean): Promise<LeaseResponse> {
   const body: Record<string, unknown> = { action: "acquire", clientId: identity.clientId, leaseToken: identity.leaseToken };
-  if (options?.reentry === true) body.reentry = true;
+  if (identity.priorLeaseToken !== undefined && identity.priorGeneration !== undefined) {
+    body.priorLeaseToken = identity.priorLeaseToken;
+    body.priorGeneration = identity.priorGeneration;
+  }
   return leaseFetchWithHeld(docId, body, fetchFn, adminMode);
 }
 
-// Web Locks-based per-context liveness. A lock is held by the live editor document,
-// released when that document unloads, and is never copied to opener-created windows
-// or duplicated tabs (unlike sessionStorage, which MDN documents as copied to a page
-// with an opener). This gives the re-entry decision a truly per-browsing-context
-// identity: survive reload/navigation, not copied to a newly opened editor context.
+// Per-browsing-context identity for same-context re-entry (non-secret only).
+//
+// Platform semantics (MDN Window.name): the name is a property of the browsing
+// context itself. It survives same-tab reloads and same-origin navigations, modern
+// browsers reset it on cross-domain loads and restore it when the original page
+// returns, and a context opened via window.open/target starts as a new context whose
+// name is only what the opener explicitly assigns (the editor never assigns opener
+// names). A new page instance therefore finds the same context id, while a
+// newly opened editor context starts empty and generates its own id.
+// Never store tokens or credentials here; the id is not a secret.
 
-export const LEASE_HOLD_LOCK_PREFIX = "edit-lease-hold:";
+export const EDITOR_CONTEXT_ID_PREFIX = "ecid:";
+const EDITOR_CONTEXT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export function leaseHoldLockName(docId: string, clientId: string): string {
-  return `${LEASE_HOLD_LOCK_PREFIX}${docId}:${clientId}`;
+export function parseEditorContextId(name: string): string | null {
+  if (typeof name !== "string" || !name.startsWith(EDITOR_CONTEXT_ID_PREFIX)) return null;
+  const id = name.slice(EDITOR_CONTEXT_ID_PREFIX.length);
+  return EDITOR_CONTEXT_ID_PATTERN.test(id) ? id : null;
 }
 
-interface LockManagerLike {
-  request: (name: string, options: { ifAvailable?: boolean }, callback: (lock: unknown) => Promise<void>) => Promise<unknown>;
-}
-
-function getLockManager(): LockManagerLike | null {
-  if (typeof navigator === "undefined") return null;
-  const locks = (navigator as unknown as { locks?: LockManagerLike }).locks;
-  return locks ?? null;
-}
-
-export async function probeReentryLock(docId: string, clientId: string, options?: { attempts?: number; delayMs?: number; locks?: LockManagerLike | null }): Promise<boolean> {
-  const locks = options?.locks !== undefined ? options.locks : getLockManager();
-  if (!locks) return false;
-  const attempts = options?.attempts ?? 4;
-  const delayMs = options?.delayMs ?? 150;
-  const name = leaseHoldLockName(docId, clientId);
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    let granted = false;
-    try {
-      await locks.request(name, { ifAvailable: true }, async (lock) => {
-        granted = lock != null;
-      });
-    } catch {
-      return false;
-    }
-    if (granted) return true;
-    if (attempt < attempts - 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-    }
+export function getEditorContextId(): string {
+  if (typeof window !== "undefined") {
+    const existing = parseEditorContextId(window.name);
+    if (existing) return existing;
+    const id = crypto.randomUUID();
+    window.name = EDITOR_CONTEXT_ID_PREFIX + id;
+    return id;
   }
-  return false;
+  return "";
 }
 
-export function requestLeaseHold(docId: string, clientId: string, onHeld: (release: () => void) => void, locksOverride?: LockManagerLike | null): void {
-  const locks = locksOverride !== undefined ? locksOverride : getLockManager();
-  if (!locks) return;
-  void locks
-    .request(leaseHoldLockName(docId, clientId), { ifAvailable: true }, () => new Promise<void>((resolve) => { onHeld(resolve); }))
-    .catch(() => {});
+// Previous server-issued lease credentials for same-context re-entry proof, persisted
+// in sessionStorage keyed by document + context id. sessionStorage survives reload in
+// the same browsing context; a newly opened context (opener-created or duplicated)
+// cannot present them under its own context id because the id differs.
+export function leaseCredentialsKey(docId: string, contextId: string): string {
+  return `excalidraw_lease_cred:${docId}:${contextId}`;
 }
+
+export interface StoredLeaseCredentials {
+  leaseToken: string;
+  generation: number;
+}
+
+export function readStoredLeaseCredentials(storage: Storage, docId: string, contextId: string): StoredLeaseCredentials | null {
+  try {
+    const raw = storage.getItem(leaseCredentialsKey(docId, contextId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { leaseToken?: unknown; generation?: unknown };
+    if (typeof parsed.leaseToken !== "string" || parsed.leaseToken.length === 0 || parsed.leaseToken.length > 256) return null;
+    if (typeof parsed.generation !== "number" || !Number.isSafeInteger(parsed.generation) || parsed.generation <= 0) return null;
+    return { leaseToken: parsed.leaseToken, generation: parsed.generation };
+  } catch {
+    return null;
+  }
+}
+
+export function storeLeaseCredentials(storage: Storage, docId: string, contextId: string, creds: StoredLeaseCredentials): void {
+  try {
+    storage.setItem(leaseCredentialsKey(docId, contextId), JSON.stringify(creds));
+  } catch {
+    // storage may be unavailable; re-entry proof is best-effort
+  }
+}
+
+export function clearStoredLeaseCredentials(storage: Storage, docId: string, contextId: string | null): void {
+  if (!contextId) return;
+  try {
+    storage.removeItem(leaseCredentialsKey(docId, contextId));
+  } catch {
+    // ignore
+  }
+}
+
 
 
 export function heartbeatLease(docId: string, lease: EditLeaseCredentials, fetchFn?: typeof fetch, adminMode?: boolean): Promise<LeaseResponse> {

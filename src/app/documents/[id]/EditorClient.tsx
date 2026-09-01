@@ -19,7 +19,7 @@ import {
   sceneMatchesLastSaved,
   getManualSaveStatus,
 } from "@/lib/client_save";
-import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, waitForNoSaving, shouldRecoverHandoffToActive, shouldSkipHandoffForRestore, credentialKey, dispatchRelease, probeReentryLock, requestLeaseHold } from "@/lib/client_edit_lease";
+import { acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, waitForNoSaving, shouldRecoverHandoffToActive, shouldSkipHandoffForRestore, credentialKey, dispatchRelease, getEditorContextId, readStoredLeaseCredentials, storeLeaseCredentials, clearStoredLeaseCredentials } from "@/lib/client_edit_lease";
 import type { EditorLeaseMode } from "@/lib/client_edit_lease";
 import type { EditLeaseCredentials, ExcalidrawScene, Permission, LeaseHolderSummary } from "@/lib/types";
 import type { LocalDraftEnvelope } from "@/lib/client_save";
@@ -107,7 +107,6 @@ export default function EditorClient({
   const [isDeleted, setIsDeleted] = useState(initialDeleted);
 
   const hasWritePermission = currentPermission !== "VIEWER" && !isDeleted;
-  const selfUsername = user.username;
   const adminMode = initialAdminMode;
   const withAdminMode = (url: string) => adminMode ? `${url}${url.includes("?") ? "&" : "?"}adminMode=1` : url;
   const hasReleasedRef = useRef<Set<string>>(new Set());
@@ -127,14 +126,6 @@ export default function EditorClient({
   const [leaseError, setLeaseError] = useState<string | null>(null);
   const leaseModeRef = useRef(leaseMode);
   const leaseCredentialsRef = useRef<EditLeaseCredentials | null>(null);
-  const leaseHoldReleaseRef = useRef<(() => void) | null>(null);
-  const releaseLeaseHoldLock = () => {
-    if (leaseHoldReleaseRef.current) {
-      const release = leaseHoldReleaseRef.current;
-      leaseHoldReleaseRef.current = null;
-      release();
-    }
-  };
   const leaseClientIdRef = useRef<string | null>(null);
   const leaseTokenRef = useRef<string | null>(null);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -246,7 +237,7 @@ export default function EditorClient({
     }
     handoffGuardRef.current = false;
     leaseCredentialsRef.current = null;
-    releaseLeaseHoldLock();
+    clearStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, leaseClientIdRef.current);
     // Do not clear localStorage draft
     try {
       const data = await api<{ document: { title: string }; scene: ExcalidrawScene; permission: Permission }>(withAdminMode(`/api/documents/${docId}`));
@@ -276,12 +267,6 @@ export default function EditorClient({
   }, [docId, draftConflict, setStatus]);
 
   const finalizeAcquisition = useCallback(async (creds: EditLeaseCredentials) => {
-    // Hold a per-context Web Lock while this context owns the lease. The lock is the
-    // liveness proof used by re-entry: it is released when this document unloads and is
-    // never copied to opener-created windows or duplicated tabs.
-    requestLeaseHold(docId, creds.clientId, (release) => {
-      leaseHoldReleaseRef.current = release;
-    });
     try {
       const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(withAdminMode(`/api/documents/${docId}`));
       const serverScene = data.scene;
@@ -344,11 +329,22 @@ export default function EditorClient({
     const doAcquire = async () => {
       setLeaseMode("acquiring");
       try {
-        const clientId = getLeaseClientId(sessionStorage as unknown as Storage);
+        // The lease clientId is the per-browsing-context id from window.name: it
+        // survives same-tab reload/navigation and is not inherited by opener-created
+        // or duplicated contexts (which generate their own id).
+        const clientId = getEditorContextId();
         leaseClientIdRef.current = clientId;
         const leaseToken = crypto.randomUUID();
         leaseTokenRef.current = leaseToken;
-        const result = await acquireLease(docId, { clientId, leaseToken }, undefined, adminMode);
+        // Same-context re-entry proof: the previous page instance's server-issued
+        // lease credentials stored under this document + context id.
+        const prior = readStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId);
+        const result = await acquireLease(
+          docId,
+          prior ? { clientId, leaseToken, priorLeaseToken: prior.leaseToken, priorGeneration: prior.generation } : { clientId, leaseToken },
+          undefined,
+          adminMode,
+        );
         if (cancelled) {
           if (result.state === "acquired") {
             bestEffortReleaseOnce({ clientId, leaseToken, generation: result.generation });
@@ -358,32 +354,13 @@ export default function EditorClient({
         if (result.state === "acquired") {
           const creds = { clientId, leaseToken, generation: result.generation };
           leaseCredentialsRef.current = creds;
+          storeLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId, { leaseToken, generation: result.generation });
           await finalizeAcquisition(creds);
         } else if (result.state === "held") {
-          // A held result with our own username may be (a) this same tab re-entering
-          // after reload/navigation, or (b) another live context sharing our copied
-          // sessionStorage clientId (opener-created window / duplicated tab). sessionStorage
-          // cannot distinguish these (MDN: it is copied to pages with an opener), so use a
-          // Web Locks liveness probe for the per-context hold lock: the live editor document
-          // holds it, it is released on unload, and it is never copied to a new context.
-          const selfHolder = result.holder?.username === selfUsername;
-          if (selfHolder && leaseClientIdRef.current) {
-            const contextFree = await probeReentryLock(docId, leaseClientIdRef.current);
-            if (cancelled) return;
-            if (contextFree) {
-              const retry = await acquireLease(docId, { clientId, leaseToken }, undefined, adminMode, { reentry: true });
-              if (cancelled) {
-                if (retry.state === "acquired") bestEffortReleaseOnce({ clientId, leaseToken, generation: retry.generation });
-                return;
-              }
-              if (retry.state === "acquired") {
-                const creds = { clientId, leaseToken, generation: retry.generation };
-                leaseCredentialsRef.current = creds;
-                await finalizeAcquisition(creds);
-                return;
-              }
-            }
-          }
+          // Held: either another screen owns the lease, or our prior credentials did
+          // not prove same-context re-entry. The conflict modal with the takeover path
+          // is the correct response in both cases.
+          clearStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId);
           setLeaseHolder(result.holder);
           setLeaseMode("blocked");
           setRecoveryReady(true);
@@ -403,9 +380,8 @@ export default function EditorClient({
     return () => {
       cancelled = true;
       bestEffortReleaseOnce(leaseCredentialsRef.current);
-      releaseLeaseHoldLock();
     };
-  }, [docId, hasWritePermission, finalizeAcquisition, selfUsername]);
+  }, [docId, hasWritePermission, finalizeAcquisition]);
 
   const handleOpenReadOnly = useCallback(async () => {
     setLeaseBusy(true);
@@ -431,7 +407,7 @@ export default function EditorClient({
   const handleTakeover = useCallback(async () => {
     setLeaseBusy(true);
     setLeaseError(null);
-    const clientId = leaseClientIdRef.current || getLeaseClientId(sessionStorage as unknown as Storage);
+    const clientId = leaseClientIdRef.current || getEditorContextId();
     leaseClientIdRef.current = clientId;
     const leaseToken = crypto.randomUUID();
     leaseTokenRef.current = leaseToken;
@@ -440,6 +416,7 @@ export default function EditorClient({
       if (result.state === "acquired") {
         const creds = { clientId, leaseToken, generation: result.generation };
         leaseCredentialsRef.current = creds;
+        storeLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId, { leaseToken, generation: result.generation });
         await finalizeAcquisition(creds);
         setLeaseBusy(false);
         return;
@@ -458,6 +435,7 @@ export default function EditorClient({
               if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
               const creds = { clientId, leaseToken, generation: pollRes.generation };
               leaseCredentialsRef.current = creds;
+              storeLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId, { leaseToken, generation: pollRes.generation });
               await finalizeAcquisition(creds);
               setLeaseBusy(false);
             } else if (pollRes.state === "takeover_pending") {
@@ -803,7 +781,6 @@ export default function EditorClient({
   useEffect(() => {
     const handlePageHide = () => {
       bestEffortReleaseOnce(leaseCredentialsRef.current);
-      releaseLeaseHoldLock();
     };
     window.addEventListener("pagehide", handlePageHide);
     return () => window.removeEventListener("pagehide", handlePageHide);

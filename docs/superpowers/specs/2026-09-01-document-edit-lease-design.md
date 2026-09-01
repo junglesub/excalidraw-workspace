@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS document_edit_leases (
 );
 ```
 
-The client ID is stored in `sessionStorage` and identifies a browser-tab session for diagnostics and retry behavior. Lease authority never depends on the client ID alone. Each editor page instance generates a fresh random lease token in memory; a duplicated tab may inherit sessionStorage but cannot write using the original tab's token.
+The client ID is the per-browsing-context id from `window.name` (a non-secret identifier that survives same-tab reload/navigation and is not inherited by opener-created or duplicated contexts) and identifies the context for diagnostics and retry behavior. Lease authority never depends on the client ID alone. Each editor page instance generates a fresh random candidate lease token in memory; a same-context re-entry presents the previous server-issued token + generation (persisted in `sessionStorage` keyed by `{docId}:{contextId}`) as proof. A duplicated tab inherits that stored proof but, under its own `window.name` id, cannot present valid prior credentials for the live holder's clientId.
 
 The server owns `generation`. Every successful initial acquisition starts or advances it, and every takeover advances it. An ordinary release clears holder fields but retains the row and generation so a later acquisition cannot reset the fencing sequence. A scene mutation is valid only when user ID, client ID, lease token, generation, and non-expired lease all match in the same database transaction as the mutation.
 
@@ -151,11 +151,11 @@ On `pagehide`, the browser sends a best-effort credentialed release using `navig
 
 ### Re-entry semantics
 
-The lease `clientId` is stored in `sessionStorage`, which survives reload and in-app navigation within one tab. Per MDN, sessionStorage is copied to pages with an opener (and by tab duplication), so a clientId can be shared by two live contexts and must not be treated as a unique tab identity by itself. Each page instance generates a fresh lease token. The server distinguishes re-entry as follows:
+The lease `clientId` is the per-browsing-context id from `window.name`, a non-secret property of the browsing context that survives same-tab reloads and same-origin navigations and is reset on cross-domain loads. Per MDN it is NOT inherited by newly opened editor contexts (a `window.open`/target target starts unnamed; the editor never assigns opener names). Each page instance generates a fresh lease token and persists the previous server-issued token + generation in `sessionStorage` keyed by `{docId}:{contextId}`.
 
-- Same user + same `clientId` + different token: potentially the same tab re-entered, but potentially an opener-created or duplicated context sharing the copied clientId. The server therefore only re-acquires when the request carries an explicit `reentry` attestation, which the client sets after winning a Web Locks liveness probe on the per-context hold lock `edit-lease-hold:{docId}:{clientId}`. A Web Lock is held by the live editor document, released when it unloads, and never copied to a new context, so winning the probe proves no live context is editing with these credentials. On success the server rotates the token and advances the generation, fencing the previous page instance's in-flight requests (including a late pagehide release). The live holder keeps this lock held while it owns the lease.
-- Same user + different `clientId`, or a denied probe: treated as a second screen. It stays behind the conflict prompt with the takeover path. Immediate no-takeover recovery is only possible once the holder heartbeat is stale (past the 10-second takeover deadline), and it never destroys a structurally valid pending takeover.
-- Browsers without Web Locks support follow the denied-probe path (conflict + takeover); no rotation happens without the attestation.
+The server rotates/generates a new lease only when the active holder exactly matches user + clientId + prior token + prior generation. This is the only proof of re-entry; there is no boolean bypass. On success the fresh token and an advanced generation fence the previous page instance's in-flight requests (including a late pagehide release).
+
+A copied-storage context (opener-created or duplicated) has its own `window.name` id, so it cannot present valid prior credentials for the active holder's clientId and stays behind the conflict prompt with the takeover path, as does any different context. Immediate no-takeover recovery is only possible once the holder heartbeat is stale (past the 10-second takeover deadline), and it never destroys a structurally valid pending takeover.
 
 
 ## 8. API contract

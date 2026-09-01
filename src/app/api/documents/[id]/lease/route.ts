@@ -48,8 +48,20 @@ export async function POST(req: Request, { params }: Ctx) {
       if (!isNonEmptyBoundedString(clientId) || !isNonEmptyBoundedString(leaseToken)) {
         return json({ error: "clientId and leaseToken are required", code: "INVALID_CREDENTIALS" }, 400);
       }
+      // Optional prior server-issued lease credentials proving same-context re-entry.
+      // They must be presented as a pair and well-formed; the server itself verifies
+      // that they exactly match the active holder.
+      let priorLeaseToken: string | undefined;
+      let priorGeneration: number | undefined;
+      if (body.priorLeaseToken !== undefined || body.priorGeneration !== undefined) {
+        if (!isNonEmptyBoundedString(body.priorLeaseToken) || !isValidGeneration(body.priorGeneration)) {
+          return json({ error: "prior lease credentials are invalid", code: "INVALID_CREDENTIALS" }, 400);
+        }
+        priorLeaseToken = body.priorLeaseToken;
+        priorGeneration = body.priorGeneration;
+      }
       const result = acquireEditLease(
-        { docId: id, userId: user.id, role: user.role, adminMode, clientId, leaseToken, reentry: body.reentry === true },
+        { docId: id, userId: user.id, role: user.role, adminMode, clientId, leaseToken, priorLeaseToken, priorGeneration },
       );
       if (result.state === "held") {
         return json({ ...result, code: "EDIT_LEASE_HELD" }, 409);

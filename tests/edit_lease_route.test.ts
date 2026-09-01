@@ -155,24 +155,46 @@ describe("Lease API route", () => {
     expect(JSON.stringify(body)).not.toContain("c-r");
   });
 
-  it("requires the reentry attestation for same-context re-acquire and honors it", async () => {
+  it("requires exact prior lease credentials for same-context re-entry and honors them", async () => {
     const owner = createUser("owner", "pass123", "USER");
     const doc = createDocument(owner.id, emptyScene(), "Doc");
     const sessOwner = createSession(owner.id);
 
     const acq = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c1", leaseToken: "t1" }), { params: Promise.resolve({ id: doc.id }) });
     expect(acq.status).toBe(200);
+    const gen = (await acq.json()).generation;
 
-    // Same clientId, new token, no attestation: held (copied sessionStorage clientId collision safe)
-    const held = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c1", leaseToken: "t2" }), { params: Promise.resolve({ id: doc.id }) });
+    // A copied-storage / new context (different clientId) presenting the copied prior credentials cannot rotate a live lease (holder_client_id !== input.clientId): held, no bypass.
+    const diffContext = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c2", leaseToken: "t2", priorLeaseToken: "t1", priorGeneration: gen }), { params: Promise.resolve({ id: doc.id }) });
+    expect(diffContext.status).toBe(409);
+    expect((await diffContext.json()).state).toBe("held");
+
+    // A second different context (no prior, fresh token) likewise cannot acquire while the live holder holds.
+    const second = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c3", leaseToken: "t3" }), { params: Promise.resolve({ id: doc.id }) });
+    expect(second.status).toBe(409);
+    expect((await second.json()).state).toBe("held");
+
+    // Same clientId but no prior credentials: still held, no re-entry without proof.
+    const held = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c1", leaseToken: "t4" }), { params: Promise.resolve({ id: doc.id }) });
     expect(held.status).toBe(409);
     expect((await held.json()).state).toBe("held");
 
-    // With the reentry attestation: immediate re-acquire
-    const reentry = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c1", leaseToken: "t2", reentry: true }), { params: Promise.resolve({ id: doc.id }) });
+    // Exact prior credentials: immediate re-acquire on the same clientId.
+    const reentry = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c1", leaseToken: "t4", priorLeaseToken: "t1", priorGeneration: gen }), { params: Promise.resolve({ id: doc.id }) });
     expect(reentry.status).toBe(200);
     const reentryBody = await reentry.json();
     expect(reentryBody.state).toBe("acquired");
-    expect(reentryBody.leaseToken).toBe("t2");
+    expect(reentryBody.leaseToken).toBe("t4");
+  });
+
+  it("rejects malformed prior lease credential pairs", async () => {
+    const owner = createUser("owner", "pass123", "USER");
+    const doc = createDocument(owner.id, emptyScene(), "Doc");
+    const sessOwner = createSession(owner.id);
+
+    const badPair = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c1", leaseToken: "t1", priorLeaseToken: "only-token" }), { params: Promise.resolve({ id: doc.id }) });
+    expect(badPair.status).toBe(400);
+    const badGen = await leaseRoute(request(doc.id, sessOwner.token, { action: "acquire", clientId: "c1", leaseToken: "t1", priorGeneration: 0 }), { params: Promise.resolve({ id: doc.id }) });
+    expect(badGen.status).toBe(400);
   });
 });

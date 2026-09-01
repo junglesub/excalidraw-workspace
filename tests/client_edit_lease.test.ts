@@ -1,21 +1,47 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, leaseHoldLockName, probeReentryLock, requestLeaseHold } from "@/lib/client_edit_lease";
+import { acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, getEditorContextId, parseEditorContextId, leaseCredentialsKey, readStoredLeaseCredentials, storeLeaseCredentials, clearStoredLeaseCredentials } from "@/lib/client_edit_lease";
 import { ApiError } from "@/lib/client";
 import { saveDocumentScene, resolveClientRecovery } from "@/lib/client_save";
 import { emptyScene } from "@/lib/types";
 
 describe("Client edit lease transport", () => {
-  it("creates and reuses clientId via sessionStorage", () => {
-    const store: Record<string, string> = {};
-    const storage = {
-      getItem(k: string) { return store[k] ?? null; },
-      setItem(k: string, v: string) { store[k] = v; },
-    } as unknown as Storage;
-    const first = getLeaseClientId(storage);
-    expect(first).toMatch(/[0-9a-f-]{36}/i);
-    const second = getLeaseClientId(storage);
-    expect(second).toBe(first);
+function withMockWindow(name: string, fn: () => void): void {
+    const g = globalThis as { window?: { name: string } };
+    const original = g.window;
+    g.window = { name };
+    try {
+      fn();
+    } finally {
+      g.window = original;
+    }
+  }
+
+  it("gets a per-browsing-context id from window.name and reuses it across instances", () => {
+    let firstId = "";
+    withMockWindow("", () => { firstId = getEditorContextId(); });
+    expect(firstId).toMatch(/[0-9a-f-]{36}/i);
+    // A reload in the same browsing context finds the same window.name -> same id.
+    withMockWindow("ecid:" + firstId, () => {
+      expect(getEditorContextId()).toBe(firstId);
+    });
   });
+
+  it("a new editor context (empty window.name) generates a different id", () => {
+    let id1 = "";
+    let id2 = "";
+    withMockWindow("", () => { id1 = getEditorContextId(); });
+    withMockWindow("", () => { id2 = getEditorContextId(); });
+    expect(id1).not.toBe(id2);
+  });
+
+  it("parses only editor-prefixed valid ids", () => {
+    const id = crypto.randomUUID();
+    expect(parseEditorContextId("ecid:" + id)).toBe(id);
+    expect(parseEditorContextId("other:" + id)).toBeNull();
+    expect(parseEditorContextId("ecid:not-a-uuid")).toBeNull();
+    expect(parseEditorContextId("")).toBeNull();
+  });
+
 
   it("parses ApiError with status and code", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "lost", code: "EDIT_LEASE_LOST" }), { status: 409 }));
@@ -125,70 +151,55 @@ describe("Client edit lease transport", () => {
     expect((result as { holder: { username: string } }).holder.username).toBe("bob");
   });
 
-  it("sends the reentry attestation flag only when requested", async () => {
+  it("sends prior lease credentials as re-entry proof when provided", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)));
       return new Response(JSON.stringify({ state: "acquired", generation: 2, clientId: "c1", leaseToken: "t2", acquiredAt: "a", heartbeatAt: "b", expiresAt: "e" }), { status: 200 });
     });
     await acquireLease("doc1", { clientId: "c1", leaseToken: "t2" }, fetchMock as unknown as typeof fetch);
-    expect(bodies[0].reentry).toBeUndefined();
-    await acquireLease("doc1", { clientId: "c1", leaseToken: "t2" }, fetchMock as unknown as typeof fetch, undefined, { reentry: true });
-    expect(bodies[1].reentry).toBe(true);
+    expect(bodies[0].priorLeaseToken).toBeUndefined();
+    expect(bodies[0].priorGeneration).toBeUndefined();
+    await acquireLease("doc1", { clientId: "c1", leaseToken: "t2", priorLeaseToken: "t1", priorGeneration: 1 }, fetchMock as unknown as typeof fetch);
+    expect(bodies[1].priorLeaseToken).toBe("t1");
+    expect(bodies[1].priorGeneration).toBe(1);
   });
 });
-
-describe("Web Locks per-context re-entry identity", () => {
-  interface FakeLockManagerState {
-    held: Set<string>;
-    requests: Array<{ name: string; options: { ifAvailable?: boolean } }>;
-  }
-
-  function makeLockManager(state: FakeLockManagerState) {
+describe("Per-context identity and stored credential helpers", () => {
+  function makeStorage(initial: Record<string, string> = {}): Storage {
+    const store: Record<string, string> = { ...initial };
     return {
-      request: (name: string, options: { ifAvailable?: boolean }, callback: (lock: unknown) => Promise<void>) => {
-        state.requests.push({ name, options });
-        const lock = state.held.has(name) ? null : { name, mode: "exclusive" };
-        if (lock) state.held.add(name);
-        return callback(lock).finally(() => {
-          if (lock) state.held.delete(name);
-        });
-      },
-    };
+      getItem(k: string) { return store[k] ?? null; },
+      setItem(k: string, v: string) { store[k] = v; },
+      removeItem(k: string) { delete store[k]; },
+    } as unknown as Storage;
   }
 
-  it("builds per-context lock names", () => {
-    expect(leaseHoldLockName("doc1", "c1")).toBe("edit-lease-hold:doc1:c1");
+  it("keys stored lease credentials by document and context id", () => {
+    expect(leaseCredentialsKey("doc1", "c1")).toBe("excalidraw_lease_cred:doc1:c1");
+    expect(leaseCredentialsKey("doc1", "c1")).not.toBe(leaseCredentialsKey("doc1", "c2"));
+    expect(leaseCredentialsKey("doc1", "c1")).not.toBe(leaseCredentialsKey("doc2", "c1"));
   });
 
-  it("probe returns true only when the per-context lock is free (previous context dead)", async () => {
-    const state: FakeLockManagerState = { held: new Set(), requests: [] };
-    const free = await probeReentryLock("doc1", "c1", { attempts: 2, delayMs: 1, locks: makeLockManager(state) });
-    expect(free).toBe(true);
-    expect(state.requests[0].name).toBe("edit-lease-hold:doc1:c1");
-    expect(state.requests[0].options.ifAvailable).toBe(true);
+  it("stores and reads back server-issued lease credentials under the owning context", () => {
+    const storage = makeStorage();
+    storeLeaseCredentials(storage, "doc1", "c1", { leaseToken: "t1", generation: 3 });
+    expect(readStoredLeaseCredentials(storage, "doc1", "c1")).toEqual({ leaseToken: "t1", generation: 3 });
+    // A different context id or document cannot read them back (keyed by context).
+    expect(readStoredLeaseCredentials(storage, "doc1", "c2")).toBeNull();
+    expect(readStoredLeaseCredentials(storage, "doc2", "c1")).toBeNull();
   });
 
-  it("probe returns false when a live context holds the lock (copied clientId collision)", async () => {
-    const state: FakeLockManagerState = { held: new Set(["edit-lease-hold:doc1:c1"]), requests: [] };
-    const busy = await probeReentryLock("doc1", "c1", { attempts: 3, delayMs: 1, locks: makeLockManager(state) });
-    expect(busy).toBe(false);
-    expect(state.requests.length).toBe(3);
-  });
-
-  it("probe is safe-fail when the Web Locks API is unavailable", async () => {
-    const busy = await probeReentryLock("doc1", "c1", { locks: null });
-    expect(busy).toBe(false);
-  });
-
-  it("requestLeaseHold holds the lock until released", async () => {
-    const state: FakeLockManagerState = { held: new Set(), requests: [] };
-    let releaseFn: (() => void) | null = null;
-    requestLeaseHold("doc1", "c1", (release) => { releaseFn = release; }, makeLockManager(state));
-    await new Promise((r) => setTimeout(r, 10));
-    expect(state.held.has("edit-lease-hold:doc1:c1")).toBe(true);
-    (releaseFn as unknown as () => void)();
-    await new Promise((r) => setTimeout(r, 10));
-    expect(state.held.has("edit-lease-hold:doc1:c1")).toBe(false);
+  it("rejects malformed stored credentials and clears cleanly", () => {
+    const malformed: Record<string, string> = {
+      "excalidraw_lease_cred:doc1:c1": JSON.stringify({ leaseToken: "", generation: 0 }),
+      "excalidraw_lease_cred:doc1:c2": "not-json",
+    };
+    const storage = makeStorage(malformed);
+    expect(readStoredLeaseCredentials(storage, "doc1", "c1")).toBeNull();
+    expect(readStoredLeaseCredentials(storage, "doc1", "c2")).toBeNull();
+    storeLeaseCredentials(storage, "doc1", "c1", { leaseToken: "t1", generation: 1 });
+    clearStoredLeaseCredentials(storage, "doc1", "c1");
+    expect(readStoredLeaseCredentials(storage, "doc1", "c1")).toBeNull();
   });
 });

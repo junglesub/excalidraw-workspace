@@ -27,7 +27,7 @@ describe("Document edit lease state machine", () => {
     return createDocument(ownerId, emptyScene(), "Doc");
   }
 
-  function identity(docId: string, userId: string, overrides: Partial<{ clientId: string; leaseToken: string; reentry: boolean }> = {}) {
+  function identity(docId: string, userId: string, overrides: Partial<{ clientId: string; leaseToken: string; priorLeaseToken: string; priorGeneration: number }> = {}) {
     return {
       docId,
       userId,
@@ -35,7 +35,8 @@ describe("Document edit lease state machine", () => {
       adminMode: false,
       clientId: overrides.clientId ?? "client-a",
       leaseToken: overrides.leaseToken ?? "token-a",
-      ...(overrides.reentry !== undefined ? { reentry: overrides.reentry } : {}),
+      ...(overrides.priorLeaseToken !== undefined ? { priorLeaseToken: overrides.priorLeaseToken } : {}),
+      ...(overrides.priorGeneration !== undefined ? { priorGeneration: overrides.priorGeneration } : {}),
     };
   }
 
@@ -53,9 +54,9 @@ describe("Document edit lease state machine", () => {
       expect(retry.generation).toBe(firstGen);
     }
 
-    // Same tab re-entry (same per-tab clientId, fresh page token) re-acquires immediately,
-    // but only with the client's Web Locks re-entry attestation.
-    const reacquired = acquireEditLease(identity(doc.id, owner.id, { leaseToken: "token-b", reentry: true }), NOW);
+    // Same-context re-entry: same per-context clientId, fresh page token, and exact prior
+    // server-issued credentials as proof -> re-acquires immediately.
+    const reacquired = acquireEditLease(identity(doc.id, owner.id, { leaseToken: "token-b", priorLeaseToken: "token-a", priorGeneration: firstGen }), NOW);
     expect(reacquired).toMatchObject({ state: "acquired" });
     if (reacquired.state === "acquired") {
       expect(reacquired.generation).toBe(firstGen + 1);
@@ -63,8 +64,9 @@ describe("Document edit lease state machine", () => {
       expect(reacquired.leaseToken).toBe("token-b");
     }
 
-    // A second live tab/session of the same user (different clientId, fresh heartbeat) is held
-    const secondTab = acquireEditLease(identity(doc.id, owner.id, { clientId: "client-b", leaseToken: "token-c" }), NOW);
+    // A second context/screen of the same user (different clientId) is held even if it
+    // has copied-storage credential data, because the holder's clientId no longer matches.
+    const secondTab = acquireEditLease(identity(doc.id, owner.id, { clientId: "client-b", leaseToken: "token-c", priorLeaseToken: "token-b", priorGeneration: firstGen + 1 }), NOW);
     expect(secondTab).toMatchObject({ state: "held" });
     expect(JSON.stringify(secondTab)).not.toContain("token-b");
     expect(JSON.stringify(secondTab)).not.toContain("client-a");

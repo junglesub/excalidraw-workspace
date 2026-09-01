@@ -83,12 +83,14 @@ export interface LeaseIdentityInput {
   clientId: string;
   leaseToken: string;
   /**
-   * Client re-entry attestation: set only after the client verified via a Web Locks
-   * liveness probe that no other live editor context holds this per-context lock.
-   * sessionStorage clientId is copied to opener-created windows/duplicated tabs, so
-   * a same-clientId acquire alone must never rotate the lease of a live context.
+   * Prior server-issued lease credentials presented as proof of same-context re-entry.
+   * The active holder must exactly match user + clientId + prior token + prior
+   * generation for rotation; there is no boolean bypass. Sent only by a context whose
+   * per-context identity survived the reload and whose copied-storage credentials
+   * therefore match a dead previous page instance of the same browsing context.
    */
-  reentry?: boolean;
+  priorLeaseToken?: string;
+  priorGeneration?: number;
 }
 
 export interface ActiveLeaseInput extends LeaseIdentityInput {
@@ -219,27 +221,35 @@ export function acquireEditLease(input: LeaseIdentityInput, now?: Date): LeaseRe
       return toAcquiredResult(updated);
     }
 
-    // Re-entry handling for the same user (evidence-based semantics):
-    // - MDN: "If the page has an opener, the sessionStorage is initially a copy of the
-    //   opener's sessionStorage object" (and duplicated tabs copy it too), so a
-    //   clientId shared by two live contexts is possible and same-clientId alone must
-    //   never rotate the lease. Rotation therefore requires an explicit `reentry`
-    //   attestation, which the client sets only after winning a Web Locks liveness
-    //   probe for this per-context lock (locks are held by the live document, released
-    //   on unload, and never copied to opener/duplicate contexts). Token rotation and
-    //   generation advance fence the previous page instance's in-flight requests
-    //   (including a late best-effort pagehide release).
+    // Re-entry handling for the same user (credential-proven, per platform semantics):
+    // - The per-browsing-context ID lives in window.name (a property of the browsing
+    //   context itself: it survives same-tab reload/navigation and is not inherited by
+    //   window.open targets, which start as new unnamed contexts; MDN documents the
+    //   cross-origin reset/restore behavior). It is a non-secret id only.
+    // - Proof of re-entry is the previous SERVER-ISSUED lease credentials: the request
+    //   must carry priorLeaseToken/priorGeneration that exactly match the active
+    //   holder's user + clientId + token + generation. A copied-storage context
+    //   (opener/duplicate) without the matching context id cannot present valid prior
+    //   credentials for this clientId, and there is no boolean bypass.
+    // - Rotation uses the fresh candidate token and advances the generation, fencing
+    //   the previous page instance's in-flight operations (late heartbeat/release).
     // - A different clientId (new tab/window/relaunched browser) is indistinguishable
     //   server-side from any other screen of the same user, so the global one-editor
     //   conflict is preserved. Recovery without takeover is only possible once the
     //   holder heartbeat is stale (> TAKEOVER_TIMEOUT_MS), consistent with
-    //   forced-takeover semantics.
+    //   forced-takeover semantics. Structurally valid pending takeovers are never
+    //   clobbered.
     if (row.holder_user_id === input.userId) {
       const lastBeat = row.heartbeat_at ? Date.parse(row.heartbeat_at) : NaN;
       const heartbeatStale = Number.isNaN(lastBeat) || nowDate.getTime() - lastBeat > TAKEOVER_TIMEOUT_MS;
       const pendingBlocked = !!row.takeover_request_id && !isTakeoverExpired(row, nowDate);
-      const attestedSameContextReentry = input.reentry === true && row.holder_client_id === input.clientId;
-      if (!pendingBlocked && (attestedSameContextReentry || heartbeatStale)) {
+      const credentialedSameContextReentry =
+        row.holder_client_id === input.clientId &&
+        input.priorLeaseToken !== undefined &&
+        row.lease_token === input.priorLeaseToken &&
+        input.priorGeneration !== undefined &&
+        row.generation === input.priorGeneration;
+      if (!pendingBlocked && (credentialedSameContextReentry || heartbeatStale)) {
         const generation = row.generation + 1;
         const iso = nowDate.toISOString();
         const expiresAt = new Date(nowDate.getTime() + LEASE_TTL_MS).toISOString();
