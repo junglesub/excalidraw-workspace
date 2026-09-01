@@ -1,6 +1,7 @@
 "use client";
 
 import type { EditLeaseCredentials } from "./types";
+export type { EditLeaseCredentials };
 import { ApiError } from "./client";
 
 export type EditorLeaseMode = "viewer" | "acquiring" | "blocked" | "active" | "handoff" | "readonly" | "lost";
@@ -260,3 +261,178 @@ export function dispatchRelease(url: string, payload: string, released: Set<stri
   if (dispatched) released.add(key);
   return dispatched;
 }
+
+export interface InitialLeaseCandidate {
+  clientId: string;
+  leaseToken: string;
+  prior: StoredLeaseCredentials | null;
+}
+
+export interface InitialLeaseSubscriber {
+  onAcquired: (creds: EditLeaseCredentials) => Promise<void> | void;
+  onHeld: (holder: LeaseHolderSummaryWire, prior: StoredLeaseCredentials | null) => void;
+  onError: (err: unknown) => void;
+}
+
+export interface InitialLeaseCoordinatorOptions {
+  docId: string;
+  clientId: string | (() => string);
+  leaseToken?: string | (() => string);
+  prior?: StoredLeaseCredentials | null | ((clientId: string) => StoredLeaseCredentials | null);
+  adminMode?: boolean;
+  acquireFn?: (
+    docId: string,
+    candidate: LeaseCandidate & { priorLeaseToken?: string; priorGeneration?: number },
+    fetchFn?: typeof fetch,
+    adminMode?: boolean,
+  ) => Promise<LeaseResponse>;
+  releaseFn: (creds: EditLeaseCredentials) => void;
+}
+
+export class InitialLeaseCoordinator {
+  private readonly docId: string;
+  private readonly adminMode?: boolean;
+  private readonly acquireFn: (
+    docId: string,
+    candidate: LeaseCandidate & { priorLeaseToken?: string; priorGeneration?: number },
+    fetchFn?: typeof fetch,
+    adminMode?: boolean,
+  ) => Promise<LeaseResponse>;
+  private readonly releaseFn: (creds: EditLeaseCredentials) => void;
+  private readonly clientIdResolver: string | (() => string);
+  private readonly leaseTokenResolver?: string | (() => string);
+  private readonly priorResolver?: StoredLeaseCredentials | null | ((clientId: string) => StoredLeaseCredentials | null);
+
+  private candidate: InitialLeaseCandidate | null = null;
+  private flightPromise: Promise<LeaseResponse> | null = null;
+  private activeSubscriber: InitialLeaseSubscriber | null = null;
+  private finalized = false;
+  private acquiredCreds: EditLeaseCredentials | null = null;
+  private isReleased = false;
+
+  constructor(options: InitialLeaseCoordinatorOptions) {
+    this.docId = options.docId;
+    this.adminMode = options.adminMode;
+    this.acquireFn = options.acquireFn || acquireLease;
+    this.releaseFn = options.releaseFn;
+    this.clientIdResolver = options.clientId;
+    this.leaseTokenResolver = options.leaseToken;
+    this.priorResolver = options.prior;
+  }
+
+  public getDocId(): string {
+    return this.docId;
+  }
+
+  public getCandidate(): InitialLeaseCandidate | null {
+    return this.candidate;
+  }
+
+  public getFlightPromise(): Promise<LeaseResponse> | null {
+    return this.flightPromise;
+  }
+
+  public isFinalized(): boolean {
+    return this.finalized;
+  }
+
+  private resolveCandidate(): InitialLeaseCandidate {
+    if (this.candidate) return this.candidate;
+    const clientId = typeof this.clientIdResolver === "function" ? this.clientIdResolver() : this.clientIdResolver;
+    const leaseToken = this.leaseTokenResolver
+      ? typeof this.leaseTokenResolver === "function"
+        ? this.leaseTokenResolver()
+        : this.leaseTokenResolver
+      : (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `token_${Date.now()}_${Math.random()}`);
+    const prior = typeof this.priorResolver === "function" ? this.priorResolver(clientId) : (this.priorResolver ?? null);
+    this.candidate = { clientId, leaseToken, prior };
+    return this.candidate;
+  }
+
+  public subscribe(subscriber: InitialLeaseSubscriber): () => void {
+    this.activeSubscriber = subscriber;
+    const currentSubscriber = subscriber;
+
+    if (!this.flightPromise) {
+      const candidate = this.resolveCandidate();
+      const payload: LeaseCandidate & { priorLeaseToken?: string; priorGeneration?: number } = {
+        clientId: candidate.clientId,
+        leaseToken: candidate.leaseToken,
+      };
+      if (candidate.prior) {
+        payload.priorLeaseToken = candidate.prior.leaseToken;
+        payload.priorGeneration = candidate.prior.generation;
+      }
+
+      const promise = this.acquireFn(this.docId, payload, undefined, this.adminMode);
+      this.flightPromise = promise;
+
+      promise.then(
+        async (result) => {
+          if (this.activeSubscriber) {
+            this.finalized = true;
+            if (result.state === "acquired") {
+              const creds: EditLeaseCredentials = {
+                clientId: candidate.clientId,
+                leaseToken: candidate.leaseToken,
+                generation: result.generation,
+              };
+              this.acquiredCreds = creds;
+              try {
+                await this.activeSubscriber.onAcquired(creds);
+              } catch (err) {
+                this.activeSubscriber.onError(err);
+              }
+            } else if (result.state === "held") {
+              this.activeSubscriber.onHeld(result.holder, candidate.prior);
+            }
+          } else {
+            // Cancelled before response arrived (genuine unmount)
+            if (result.state === "acquired") {
+              const creds: EditLeaseCredentials = {
+                clientId: candidate.clientId,
+                leaseToken: candidate.leaseToken,
+                generation: result.generation,
+              };
+              this.acquiredCreds = creds;
+              this.releaseOnce(creds);
+            }
+          }
+        },
+        (err) => {
+          if (this.activeSubscriber) {
+            this.finalized = true;
+            this.activeSubscriber.onError(err);
+          }
+        }
+      );
+    }
+
+    return () => {
+      if (this.activeSubscriber === currentSubscriber) {
+        this.activeSubscriber = null;
+      }
+      if (this.finalized && this.acquiredCreds) {
+        this.releaseOnce(this.acquiredCreds);
+      }
+    };
+  }
+
+  private releaseOnce(creds: EditLeaseCredentials): void {
+    if (this.isReleased) return;
+    this.isReleased = true;
+    try {
+      this.releaseFn(creds);
+    } catch {
+      // ignore
+    }
+  }
+
+  public dispose(): void {
+    this.activeSubscriber = null;
+    if (this.acquiredCreds) {
+      this.releaseOnce(this.acquiredCreds);
+    }
+  }
+}
+
