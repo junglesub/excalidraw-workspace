@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import ExcalidrawCanvas from "@/components/ExcalidrawCanvas";
 import RecoveryConflictModal from "@/components/RecoveryConflictModal";
-import { api } from "@/lib/client";
+import EditLeaseConflictModal from "@/components/EditLeaseConflictModal";
+import { api, ApiError } from "@/lib/client";
 import {
   saveDocumentScene,
   sceneForLocalDraft,
@@ -18,7 +19,9 @@ import {
   sceneMatchesLastSaved,
   getManualSaveStatus,
 } from "@/lib/client_save";
-import type { ExcalidrawScene, Permission } from "@/lib/types";
+import { getLeaseClientId, acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft } from "@/lib/client_edit_lease";
+import type { EditorLeaseMode } from "@/lib/client_edit_lease";
+import type { EditLeaseCredentials, ExcalidrawScene, Permission, LeaseHolderSummary } from "@/lib/types";
 import type { LocalDraftEnvelope } from "@/lib/client_save";
 
 interface User {
@@ -101,8 +104,22 @@ export default function EditorClient({
   const [currentPermission, setCurrentPermission] = useState<Permission>(initialPermission);
   const [isDeleted, setIsDeleted] = useState(initialDeleted);
 
-  const isOwner = currentPermission === "OWNER" || user.role === "ADMIN";
-  const canEdit = currentPermission !== "VIEWER" && !isDeleted;
+  const hasWritePermission = currentPermission !== "VIEWER" && !isDeleted;
+  // lease mode state
+  const [leaseMode, setLeaseMode] = useState<"viewer" | "acquiring" | "blocked" | "active" | "handoff" | "readonly" | "lost">(
+    hasWritePermission ? "acquiring" : "viewer"
+  );
+  const [leaseHolder, setLeaseHolder] = useState<LeaseHolderSummary | null>(null);
+  const [leaseBusy, setLeaseBusy] = useState(false);
+  const [leaseError, setLeaseError] = useState<string | null>(null);
+  const leaseCredentialsRef = useRef<EditLeaseCredentials | null>(null);
+  const leaseClientIdRef = useRef<string | null>(null);
+  const leaseTokenRef = useRef<string | null>(null);
+  const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const handoffGuardRef = useRef(false);
+  const takeoverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const canEditCanvas = canMutateCanvas(leaseMode as unknown as "active" | "viewer" | "blocked" | "readonly" | "handoff" | "lost" | "acquiring");
 
   const [title, setTitle] = useState(initialTitle);
   const [titleInput, setTitleInput] = useState(initialTitle);
@@ -125,7 +142,7 @@ export default function EditorClient({
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const draftKey = localDraftStorageKey(user.id, docId);
-  const [recoveryReady, setRecoveryReady] = useState(!canEdit);
+  const [recoveryReady, setRecoveryReady] = useState(false);
   const [draftConflict, setDraftConflict] = useState<DraftConflictState | null>(null);
   const [preserveDiscarded, setPreserveDiscarded] = useState(true);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
@@ -167,6 +184,7 @@ export default function EditorClient({
   }, [docId]);
 
   const loadShare = useCallback(async () => {
+    const isOwner = currentPermission === "OWNER" || user.role === "ADMIN";
     if (!isOwner) return;
     try {
       const [linkData, memberData] = await Promise.all([
@@ -178,100 +196,411 @@ export default function EditorClient({
     } catch {
       // ignore
     }
-  }, [docId, isOwner]);
+  }, [docId, currentPermission, user.role]);
 
   useEffect(() => {
     loadVersions();
+    const isOwner = currentPermission === "OWNER" || user.role === "ADMIN";
     if (isOwner) loadShare();
-  }, [loadVersions, loadShare, isOwner]);
+  }, [loadVersions, loadShare, currentPermission]);
 
-  useEffect(() => {
-    const decision = decideDraftForAccess(
-      canEdit,
-      () => localStorage.getItem(draftKey),
-      initialScene,
-    );
-    if (!canEdit) {
+  const handleLeaseLost = useCallback(async (isDirty: boolean) => {
+    if (heartbeatTimerRef.current) {
+      clearInterval(heartbeatTimerRef.current);
+      heartbeatTimerRef.current = null;
+    }
+    if (takeoverPollRef.current) {
+      clearInterval(takeoverPollRef.current);
+      takeoverPollRef.current = null;
+    }
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    handoffGuardRef.current = false;
+    leaseCredentialsRef.current = null;
+    // Do not clear localStorage draft
+    try {
+      const data = await api<{ document: { title: string }; scene: ExcalidrawScene; permission: Permission }>(`/api/documents/${docId}`);
+      sceneRef.current = data.scene;
+      lastSavedContentRef.current = serializeSceneForComparison(data.scene);
+      // isDirtyRef should remain true if dirty? But spec says old editor retains unconfirmed draft, so keep isDirty true
+      // Do not clear draft
+      setInitialCanvasScene(data.scene);
+      setCanvasKey((k) => k + 1);
+      setDraftConflict(null);
       setRecoveryReady(true);
+    } catch {
+      // ignore fetch error
+      setRecoveryReady(true);
+    }
+    if (draftConflict) {
+      // If lease lost while recovery modal open, close it without deleting draft
+      setDraftConflict(null);
+      setRecoveryReady(true);
+    }
+    setLeaseMode("lost");
+    if (isDirty) {
+      setStatus("Editing was taken over. Unsaved local changes were kept for recovery.", "error");
+    } else {
+      setStatus("Editing moved to another screen.", "error");
+    }
+  }, [docId, draftConflict, setStatus]);
+
+  const fetchLatestAndDecideDraft = useCallback(async () => {
+    try {
+      const data = await api<{ document: { title: string; updated_at?: string; }; scene: ExcalidrawScene; permission: Permission }>(`/api/documents/${docId}`);
+      const serverScene = data.scene;
+      const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || initialUpdatedAt || "";
+      const decision2 = decideDraftForAccess(shouldReadLocalDraft(leaseMode as EditorLeaseMode), () => {
+        try { return localStorage.getItem(draftKey); } catch { return null; }
+      }, serverScene);
+
+      if (decision2.kind === "equal") {
+        try { localStorage.removeItem(draftKey); } catch {}
+        sceneRef.current = serverScene;
+        lastSavedContentRef.current = serializeSceneForComparison(serverScene);
+        isDirtyRef.current = false;
+        persistedFileIdsRef.current = new Set(Object.keys(serverScene.files || {}));
+        setInitialCanvasScene(serverScene);
+        setCanvasKey((k) => k + 1);
+        setRecoveryReady(true);
+        setDraftConflict(null);
+      } else if (decision2.kind === "conflict") {
+        setDraftConflict({ draft: decision2.draft, serverScene, serverUpdatedAt });
+        setRecoveryReady(false);
+      } else {
+        if (decision2.kind === "malformed") {
+          setStatus("Local recovery draft could not be read; server version opened and draft retained.", "error");
+        }
+        sceneRef.current = serverScene;
+        lastSavedContentRef.current = serializeSceneForComparison(serverScene);
+        isDirtyRef.current = false;
+        persistedFileIdsRef.current = new Set(Object.keys(serverScene.files || {}));
+        setInitialCanvasScene(serverScene);
+        setCanvasKey((k) => k + 1);
+        setRecoveryReady(true);
+        setDraftConflict(null);
+      }
+    } catch (e) {
+      setRecoveryReady(true);
+    }
+  }, [docId, draftKey, initialUpdatedAt, leaseMode, setStatus]);
+
+  // Initial lease gate
+  useEffect(() => {
+    if (!hasWritePermission) {
+      setLeaseMode("viewer");
+      // Viewer: never touch localStorage, fetch server scene read-only (already initialScene is server)
+      setRecoveryReady(true);
+      // Ensure no draft handling
       return;
     }
-    if (decision.kind === "equal") {
-      localStorage.removeItem(draftKey);
-      setRecoveryReady(true);
-    } else if (decision.kind === "conflict") {
-      setDraftConflict({
-        draft: decision.draft,
-        serverScene: initialScene,
-        serverUpdatedAt: initialUpdatedAt || "",
-      });
-    } else {
-      if (decision.kind === "malformed") {
-        setStatus("Local recovery draft could not be read; server version opened and draft retained.", "error");
-      }
-      setRecoveryReady(true);
-    }
-  }, [canEdit, draftKey, initialScene, initialUpdatedAt, setStatus]);
-
-  const resolveDraftChoice = useCallback(
-    async (choice: "client" | "server") => {
-      if (!draftConflict || recoveryBusy) return;
-      setRecoveryBusy(true);
-      setRecoveryError(null);
+    // Writable: acquire lease before editable mount
+    let cancelled = false;
+    const doAcquire = async () => {
+      setLeaseMode("acquiring");
       try {
-        const result = await resolveClientRecovery({
-          docId,
-          choice,
-          preserveDiscarded,
-          expectedServerUpdatedAt: draftConflict.serverUpdatedAt,
-          draft: draftConflict.draft,
-          persistedFileIds: persistedFileIdsRef.current,
-          lease: { clientId: "placeholder", leaseToken: "placeholder", generation: 1 },
-        });
-        if (!result.ok) {
-          setDraftConflict((current) =>
-            current
-              ? {
-                  ...current,
-                  serverScene: result.serverScene,
-                  serverUpdatedAt: result.serverUpdatedAt,
-                }
-              : current,
-          );
-          setRecoveryError("The server version changed. Compare the latest server version and choose again.");
-          return;
+        const clientId = getLeaseClientId(sessionStorage as unknown as Storage);
+        leaseClientIdRef.current = clientId;
+        const leaseToken = crypto.randomUUID();
+        leaseTokenRef.current = leaseToken;
+        const result = await acquireLease(docId, { clientId, leaseToken });
+        if (cancelled) return;
+        if (result.state === "acquired") {
+          leaseCredentialsRef.current = { clientId, leaseToken, generation: result.generation };
+          setLeaseMode("active");
+          // Fetch latest server scene before draft resolution
+          try {
+            const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
+            const serverScene = data.scene;
+            const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || initialUpdatedAt || "";
+            const decision = decideDraftForAccess(true, () => {
+              try { return localStorage.getItem(draftKey); } catch { return null; }
+            }, serverScene);
+            if (decision.kind === "equal") {
+              try { localStorage.removeItem(draftKey); } catch {}
+              sceneRef.current = serverScene;
+              lastSavedContentRef.current = serializeSceneForComparison(serverScene);
+              isDirtyRef.current = false;
+              persistedFileIdsRef.current = new Set(Object.keys(serverScene.files || {}));
+              setInitialCanvasScene(serverScene);
+              setCanvasKey((k) => k + 1);
+              setRecoveryReady(true);
+            } else if (decision.kind === "conflict") {
+              setDraftConflict({ draft: decision.draft, serverScene, serverUpdatedAt });
+              setRecoveryReady(false);
+            } else {
+              if (decision.kind === "malformed") {
+                setStatus("Local recovery draft could not be read; server version opened and draft retained.", "error");
+              }
+              sceneRef.current = serverScene;
+              lastSavedContentRef.current = serializeSceneForComparison(serverScene);
+              isDirtyRef.current = false;
+              persistedFileIdsRef.current = new Set(Object.keys(serverScene.files || {}));
+              setInitialCanvasScene(serverScene);
+              setCanvasKey((k) => k + 1);
+              setRecoveryReady(true);
+            }
+          } catch {
+            // fallback to initialScene
+            const decision = decideDraftForAccess(true, () => {
+              try { return localStorage.getItem(draftKey); } catch { return null; }
+            }, initialScene);
+            if (decision.kind === "equal") {
+              try { localStorage.removeItem(draftKey); } catch {}
+              setRecoveryReady(true);
+            } else if (decision.kind === "conflict") {
+              setDraftConflict({ draft: decision.draft, serverScene: initialScene, serverUpdatedAt: initialUpdatedAt || "" });
+              setRecoveryReady(false);
+            } else {
+              setRecoveryReady(true);
+            }
+          }
+        } else if (result.state === "held") {
+          setLeaseHolder(result.holder);
+          setLeaseMode("blocked");
+          setRecoveryReady(true);
         }
-
-        const selected = choice === "client" ? draftConflict.draft.scene : draftConflict.serverScene;
-        localStorage.removeItem(draftKey);
-        sceneRef.current = selected;
-        lastSavedContentRef.current = serializeSceneForComparison(selected);
-        isDirtyRef.current = false;
-        setInitialCanvasScene(selected);
-        setCanvasKey((key) => key + 1);
-        setDraftConflict(null);
+      } catch (err) {
+        if (err instanceof ApiError) {
+          if (err.code === "EDIT_LEASE_HELD" || err.status === 409) {
+            // Try to parse holder from error? Our transport returns held object not throw for acquire, so this shouldn't happen
+            setLeaseMode("blocked");
+          } else {
+            setLeaseError(err.message);
+            setLeaseMode("blocked");
+          }
+        } else {
+          setLeaseError(err instanceof Error ? err.message : "Failed to acquire lease");
+          setLeaseMode("blocked");
+        }
         setRecoveryReady(true);
-        if (result.snapshotCreated) await loadVersions();
-        setStatus(choice === "client" ? "Client draft restored" : "Server version selected", "saved");
-      } catch (error) {
-        setRecoveryError(error instanceof Error ? error.message : "Recovery failed");
-      } finally {
-        setRecoveryBusy(false);
       }
-    },
-    [draftConflict, recoveryBusy, docId, draftKey, preserveDiscarded, loadVersions, setStatus],
-  );
+    };
+    void doAcquire();
+    return () => { cancelled = true; };
+  }, [docId, hasWritePermission, draftKey, initialScene, initialUpdatedAt, setStatus]);
+
+  const handleOpenReadOnly = useCallback(async () => {
+    setLeaseBusy(true);
+    setLeaseError(null);
+    try {
+      const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
+      sceneRef.current = data.scene;
+      lastSavedContentRef.current = serializeSceneForComparison(data.scene);
+      persistedFileIdsRef.current = new Set(Object.keys(data.scene.files || {}));
+      setInitialCanvasScene(data.scene);
+      setCanvasKey((k) => k + 1);
+      isDirtyRef.current = false;
+      setLeaseMode("readonly");
+      setRecoveryReady(true);
+      setDraftConflict(null);
+    } catch (err) {
+      setLeaseError(err instanceof Error ? err.message : "Failed to load document");
+    } finally {
+      setLeaseBusy(false);
+    }
+  }, [docId]);
+
+  const handleTakeover = useCallback(async () => {
+    setLeaseBusy(true);
+    setLeaseError(null);
+    const clientId = leaseClientIdRef.current || getLeaseClientId(sessionStorage as unknown as Storage);
+    leaseClientIdRef.current = clientId;
+    const leaseToken = crypto.randomUUID();
+    leaseTokenRef.current = leaseToken;
+    try {
+      const result = await requestTakeover(docId, { clientId, leaseToken });
+      if (result.state === "acquired") {
+        leaseCredentialsRef.current = { clientId, leaseToken, generation: result.generation };
+        setLeaseMode("active");
+        // fetch latest and then draft
+        const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
+        const serverScene = data.scene;
+        const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || "";
+        const decision = decideDraftForAccess(true, () => {
+          try { return localStorage.getItem(draftKey); } catch { return null; }
+        }, serverScene);
+        if (decision.kind === "equal") {
+          try { localStorage.removeItem(draftKey); } catch {}
+          sceneRef.current = serverScene;
+          lastSavedContentRef.current = serializeSceneForComparison(serverScene);
+          setInitialCanvasScene(serverScene);
+          setCanvasKey((k) => k + 1);
+          setRecoveryReady(true);
+          setDraftConflict(null);
+        } else if (decision.kind === "conflict") {
+          setDraftConflict({ draft: decision.draft, serverScene, serverUpdatedAt });
+          setRecoveryReady(false);
+        } else {
+          sceneRef.current = serverScene;
+          lastSavedContentRef.current = serializeSceneForComparison(serverScene);
+          setInitialCanvasScene(serverScene);
+          setCanvasKey((k) => k + 1);
+          setRecoveryReady(true);
+          setDraftConflict(null);
+        }
+        setLeaseBusy(false);
+        return;
+      }
+      if (result.state === "takeover_pending") {
+        const requestId = result.requestId;
+        // Poll every 1s until acquired
+        if (takeoverPollRef.current) clearInterval(takeoverPollRef.current);
+        takeoverPollRef.current = setInterval(async () => {
+          try {
+            const pollRes = await pollTakeover(docId, { clientId, leaseToken, requestId });
+            if (pollRes.state === "acquired") {
+              if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
+              leaseCredentialsRef.current = { clientId, leaseToken, generation: pollRes.generation };
+              setLeaseMode("active");
+              setLeaseBusy(false);
+              const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
+              const serverScene = data.scene;
+              const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || "";
+              const decision = decideDraftForAccess(true, () => {
+                try { return localStorage.getItem(draftKey); } catch { return null; }
+              }, serverScene);
+              if (decision.kind === "equal") {
+                try { localStorage.removeItem(draftKey); } catch {}
+                sceneRef.current = serverScene;
+                lastSavedContentRef.current = serializeSceneForComparison(serverScene);
+                setInitialCanvasScene(serverScene);
+                setCanvasKey((k) => k + 1);
+                setRecoveryReady(true);
+                setDraftConflict(null);
+              } else if (decision.kind === "conflict") {
+                setDraftConflict({ draft: decision.draft, serverScene, serverUpdatedAt });
+                setRecoveryReady(false);
+              } else {
+                sceneRef.current = serverScene;
+                lastSavedContentRef.current = serializeSceneForComparison(serverScene);
+                setInitialCanvasScene(serverScene);
+                setCanvasKey((k) => k + 1);
+                setRecoveryReady(true);
+                setDraftConflict(null);
+              }
+            } else if (pollRes.state === "takeover_pending") {
+              // still waiting
+            }
+          } catch (err) {
+            if (err instanceof ApiError && err.code === "EDIT_LEASE_LOST") {
+              // lost, but we are requester, shouldn't happen
+            }
+            // If poll returns takeover_in_progress due to other request, it will be returned as object not throw, but our transport returns object for that.
+            // If 409 with state takeover_in_progress, our pollTakeover will return object, not throw, so handle above.
+          }
+        }, 1000);
+        return;
+      }
+      if ((result as { state: string }).state === "takeover_in_progress") {
+        setLeaseError("Another takeover is in progress. Please try again.");
+        setLeaseBusy(false);
+      }
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "TAKEOVER_IN_PROGRESS") {
+        setLeaseError("Another takeover is in progress. Please try again.");
+      } else {
+        setLeaseError(err instanceof Error ? err.message : "Takeover failed");
+      }
+      setLeaseBusy(false);
+    }
+  }, [docId, draftKey]);
+
+  // Heartbeat and graceful handoff
+  useEffect(() => {
+    if (leaseMode !== "active") return;
+    const creds = leaseCredentialsRef.current;
+    if (!creds) return;
+    const startHeartbeat = () => {
+      heartbeatTimerRef.current = setInterval(async () => {
+        try {
+          const res = await heartbeatLease(docId, creds);
+          if (res.state === "takeover_pending") {
+            if (handoffGuardRef.current) return;
+            handoffGuardRef.current = true;
+            setLeaseMode("handoff");
+            if (debounceRef.current) {
+              clearTimeout(debounceRef.current);
+              debounceRef.current = null;
+            }
+            try {
+              await saveDocumentScene({
+                docId,
+                scene: sceneRef.current,
+                persistedFileIds: persistedFileIdsRef.current,
+                isManualSave: false,
+                snapshotDue: false,
+                lease: creds,
+              });
+              // Flush succeeded, acknowledge transfer via release
+              await releaseLease(docId, creds);
+              // Become read-only with latest server scene
+              const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
+              sceneRef.current = data.scene;
+              lastSavedContentRef.current = serializeSceneForComparison(data.scene);
+              persistedFileIdsRef.current = new Set(Object.keys(data.scene.files || {}));
+              setInitialCanvasScene(data.scene);
+              setCanvasKey((k) => k + 1);
+              isDirtyRef.current = false;
+              // Do not clear draft? Handoff old editor retains draft if any? Actually after successful flush, dirty should be false and draft cleared? But spec says old editor retains any unconfirmed local draft after takeover? Handoff flush clears dirty, but if there were unconfirmed edits not flushed? The flush includes latest scene, so after flush, draft should be cleared. We'll clear isDirty.
+              try { localStorage.removeItem(draftKey); } catch {}
+              setLeaseMode("readonly");
+              leaseCredentialsRef.current = null;
+              if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; }
+            } catch (e) {
+              setStatus("Failed to flush changes for handover; waiting for forced takeover.", "error");
+              handoffGuardRef.current = false;
+              // Do not ack, wait for forced loss
+              // Keep handoff mode, next heartbeat will still see pending but guard prevents duplicate handoff
+              // After forced timeout, heartbeat will throw EDIT_LEASE_LOST and handleLeaseLost will run
+            }
+          }
+        } catch (err) {
+          if (err instanceof ApiError && err.code === "EDIT_LEASE_LOST") {
+            const isDirty = isDirtyRef.current;
+            void handleLeaseLost(isDirty);
+          } else if (err instanceof ApiError && err.status === 403) {
+            const isDirty = isDirtyRef.current;
+            void handleLeaseLost(isDirty);
+          } else {
+            // network error, keep trying
+          }
+        }
+      }, 2000);
+    };
+    startHeartbeat();
+    return () => {
+      if (heartbeatTimerRef.current) { clearInterval(heartbeatTimerRef.current); heartbeatTimerRef.current = null; }
+    };
+  }, [leaseMode, docId, draftKey, handleLeaseLost, setStatus]);
+
+  // Centralize EDIT_LEASE_LOST handling for save/recovery/restore via wrapper?
+  // We'll handle in respective callbacks by checking ApiError code.
+
+  const handleLeaseLostForMutation = useCallback(async (err: unknown) => {
+    if (err instanceof ApiError && err.code === "EDIT_LEASE_LOST") {
+      const isDirty = isDirtyRef.current;
+      await handleLeaseLost(isDirty);
+      return true;
+    }
+    return false;
+  }, [handleLeaseLost]);
 
   // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
+      if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
+      if (takeoverPollRef.current) clearInterval(takeoverPollRef.current);
     };
   }, []);
 
   const executeSave = useCallback(
     async (forceSnapshot: boolean) => {
-      if (!canEdit || (!isDirtyRef.current && !forceSnapshot)) return;
+      if (!canEditCanvas || (!isDirtyRef.current && !forceSnapshot)) return;
       if (isSavingRef.current) {
         queuedSaveRef.current = {
           forceSnapshot: forceSnapshot || queuedSaveRef.current?.forceSnapshot || false,
@@ -288,6 +617,10 @@ export default function EditorClient({
         while (true) {
           const snapshotBeforeSave = sceneRef.current;
           const serializedBeforeSave = serializeSceneForComparison(snapshotBeforeSave);
+          const creds = leaseCredentialsRef.current;
+          if (!creds) {
+            throw new ApiError(409, "Editing lease was lost", "EDIT_LEASE_LOST");
+          }
 
           const res = await saveDocumentScene({
             docId,
@@ -295,7 +628,7 @@ export default function EditorClient({
             persistedFileIds: persistedFileIdsRef.current,
             isManualSave: currentSnapshot,
             snapshotDue: currentSnapshot,
-            lease: { clientId: "placeholder", leaseToken: "placeholder", generation: 1 },
+            lease: creds,
           });
           lastResult = res;
 
@@ -344,12 +677,13 @@ export default function EditorClient({
         }
       } catch (err) {
         queuedSaveRef.current = null;
+        if (await handleLeaseLostForMutation(err)) return;
         setStatus(err instanceof Error ? err.message : "Save failed", "error");
       } finally {
         isSavingRef.current = false;
       }
     },
-    [canEdit, docId, draftKey, loadVersions, setStatus],
+    [canEditCanvas, docId, draftKey, loadVersions, setStatus, handleLeaseLostForMutation],
   );
 
   const saveNow = useCallback(
@@ -361,7 +695,7 @@ export default function EditorClient({
 
   const handleChange = useCallback(
     (s: ExcalidrawScene) => {
-      if (!canEdit) return;
+      if (!canEditCanvas) return;
 
       // Keep the latest in-memory files (hydrated dataURLs) even when not dirty,
       // so thumbnail exportToBlob can rasterize images.
@@ -404,14 +738,14 @@ export default function EditorClient({
         void saveNow(due);
       }, AUTO_SAVE_MS);
     },
-    [canEdit, draftKey, saveNow, setStatus],
+    [canEditCanvas, draftKey, saveNow, setStatus],
   );
 
   const manualSave = useCallback(async () => {
-    if (!canEdit) return;
+    if (!canEditCanvas) return;
     if (debounceRef.current) clearTimeout(debounceRef.current);
     await executeSave(true);
-  }, [canEdit, executeSave]);
+  }, [canEditCanvas, executeSave]);
 
   // Intercept Ctrl+S / Cmd+S globally to save immediately to server
   useEffect(() => {
@@ -419,7 +753,7 @@ export default function EditorClient({
       if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
         e.preventDefault();
         e.stopPropagation();
-        if (canEdit) {
+        if (canEditCanvas) {
           void manualSave();
         }
       }
@@ -429,12 +763,14 @@ export default function EditorClient({
     return () => {
       window.removeEventListener("keydown", handleKeyDown, { capture: true });
     };
-  }, [canEdit, manualSave]);
+  }, [canEditCanvas, manualSave]);
 
   // S3 crash-save beacon: on beforeunload, send a keepalive PUT with compact scene if dirty and canEdit
   useEffect(() => {
     const handleBeforeUnload = () => {
-      if (!canEdit || !isDirtyRef.current || !sceneRef.current) return;
+      if (!canEditCanvas || !isDirtyRef.current || !sceneRef.current) return;
+      const creds = leaseCredentialsRef.current;
+      if (!creds) return;
       const compactScene = buildCompactClientScene(sceneRef.current);
       const base = typeof window !== "undefined" && window.location ? window.location.origin : "";
       const url = `${base}/api/documents/${encodeURIComponent(docId)}/scene`;
@@ -442,7 +778,7 @@ export default function EditorClient({
         fetch(url, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scene: compactScene }),
+          body: JSON.stringify({ scene: compactScene, lease: creds }),
           credentials: "include",
           keepalive: true,
         });
@@ -455,12 +791,105 @@ export default function EditorClient({
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
     };
-  }, [canEdit, docId]);
+  }, [canEditCanvas, docId]);
+
+  // Release best-effort on pagehide
+  useEffect(() => {
+    const handlePageHide = () => {
+      const creds = leaseCredentialsRef.current;
+      if (!creds) return;
+      const base = typeof window !== "undefined" && window.location ? window.location.origin : "";
+      const url = `${base}/api/documents/${encodeURIComponent(docId)}/lease`;
+      const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
+      try {
+        if (navigator.sendBeacon) {
+          const blob = new Blob([payload], { type: "application/json" });
+          navigator.sendBeacon(url, blob);
+        } else {
+          fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: payload,
+            credentials: "include",
+            keepalive: true,
+          });
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, [docId]);
+
+  const resolveDraftChoice = useCallback(
+    async (choice: "client" | "server") => {
+      if (!draftConflict || recoveryBusy) return;
+      setRecoveryBusy(true);
+      setRecoveryError(null);
+      try {
+        const creds = leaseCredentialsRef.current;
+        if (!creds) throw new ApiError(409, "Editing lease was lost", "EDIT_LEASE_LOST");
+        const result = await resolveClientRecovery({
+          docId,
+          choice,
+          preserveDiscarded,
+          expectedServerUpdatedAt: draftConflict.serverUpdatedAt,
+          draft: draftConflict.draft,
+          persistedFileIds: persistedFileIdsRef.current,
+          lease: creds,
+        });
+        if (!result.ok) {
+          setDraftConflict((current) =>
+            current
+              ? {
+                  ...current,
+                  serverScene: result.serverScene,
+                  serverUpdatedAt: result.serverUpdatedAt,
+                }
+              : current,
+          );
+          setRecoveryError("The server version changed. Compare the latest server version and choose again.");
+          return;
+        }
+
+        const selected = choice === "client" ? draftConflict.draft.scene : draftConflict.serverScene;
+        try { localStorage.removeItem(draftKey); } catch {}
+        sceneRef.current = selected;
+        lastSavedContentRef.current = serializeSceneForComparison(selected);
+        isDirtyRef.current = false;
+        persistedFileIdsRef.current = new Set(Object.keys(selected.files || {}));
+        setInitialCanvasScene(selected);
+        setCanvasKey((key) => key + 1);
+        setDraftConflict(null);
+        setRecoveryReady(true);
+        if (result.snapshotCreated) await loadVersions();
+        setStatus(choice === "client" ? "Client draft restored" : "Server version selected", "saved");
+      } catch (error) {
+        if (await handleLeaseLostForMutation(error)) return;
+        setRecoveryError(error instanceof Error ? error.message : "Recovery failed");
+      } finally {
+        setRecoveryBusy(false);
+      }
+    },
+    [draftConflict, recoveryBusy, docId, draftKey, preserveDiscarded, loadVersions, setStatus, handleLeaseLostForMutation],
+  );
+
+  // If lease lost while recovery modal open, close it
+  useEffect(() => {
+    if ((leaseMode === "lost" || leaseMode === "readonly") && draftConflict) {
+      // Spec: If the lease is lost while the recovery modal is open, close the recovery flow without deleting the draft, load latest server scene, and enter read-only mode.
+      // Already handled by handleLeaseLost which clears draftConflict, but ensure isDirty retained
+      // Do not clear draftKey
+      setDraftConflict(null);
+      setRecoveryReady(true);
+    }
+  }, [leaseMode, draftConflict]);
 
   async function saveTitle() {
     setIsEditingTitle(false);
     const trimmed = titleInput.trim();
-    if (!trimmed || trimmed === title || !canEdit) {
+    if (!trimmed || trimmed === title || !hasWritePermission) {
       setTitleInput(title);
       return;
     }
@@ -478,14 +907,17 @@ export default function EditorClient({
   }
 
   async function restoreVersion(versionId: string) {
-    if (!canEdit) return;
+    if (!canEditCanvas) return;
     if (!confirm("Restore this version? A new snapshot of the restored version will be created.")) {
       return;
     }
     try {
+      const creds = leaseCredentialsRef.current;
+      if (!creds) throw new ApiError(409, "Editing lease was lost", "EDIT_LEASE_LOST");
       setStatus("Restoring version...", "saving");
       await api(`/api/documents/${docId}/versions?action=restore&versionId=${versionId}`, {
         method: "POST",
+        body: JSON.stringify({ lease: creds }),
       });
       const data = await api<{ document: { title: string }; scene: ExcalidrawScene; permission: Permission }>(
         `/api/documents/${docId}`,
@@ -493,6 +925,8 @@ export default function EditorClient({
       sceneRef.current = data.scene;
       lastSavedContentRef.current = serializeSceneForComparison(data.scene);
       isDirtyRef.current = false;
+      persistedFileIdsRef.current = new Set(Object.keys(data.scene.files || {}));
+      try { localStorage.removeItem(draftKey); } catch {}
       setInitialCanvasScene(data.scene);
       setCanvasKey((k) => k + 1);
       setTitle(data.document.title);
@@ -501,6 +935,7 @@ export default function EditorClient({
       setShowVersions(false);
       setStatus(`Restored version successfully`, "saved");
     } catch (err) {
+      if (await handleLeaseLostForMutation(err)) return;
       setStatus(err instanceof Error ? err.message : "Failed to restore version", "error");
     }
   }
@@ -612,6 +1047,17 @@ export default function EditorClient({
     );
   }
 
+  const isReadOnlyBanner = (leaseMode === "readonly" || leaseMode === "lost") && hasWritePermission;
+  const showLeaseConflict = leaseMode === "blocked";
+  const showCanvas = (() => {
+    if (leaseMode === "viewer") return true;
+    if (leaseMode === "active" || leaseMode === "handoff") return recoveryReady && !draftConflict;
+    if (leaseMode === "readonly" || leaseMode === "lost") return true;
+    if (leaseMode === "blocked") return false;
+    if (leaseMode === "acquiring") return false;
+    return recoveryReady && !draftConflict;
+  })();
+
   return (
     <div className="h-screen flex flex-col bg-gray-50">
       {/* Top Navigation Bar */}
@@ -627,7 +1073,7 @@ export default function EditorClient({
           <span className="text-gray-300">|</span>
 
           {/* Title Editor */}
-          {canEdit ? (
+          {hasWritePermission ? (
             isEditingTitle ? (
               <input
                 type="text"
@@ -658,9 +1104,19 @@ export default function EditorClient({
           )}
 
           {/* Status Indicators */}
-          {!canEdit && (
+          {!hasWritePermission && (
             <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-medium shrink-0">
               {isDeleted ? "In Trash" : "Read-only"}
+            </span>
+          )}
+          {hasWritePermission && (leaseMode === "readonly" || leaseMode === "lost") && (
+            <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-medium shrink-0">
+              Read-only
+            </span>
+          )}
+          {leaseMode === "handoff" && (
+            <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-medium shrink-0">
+              Handing over…
             </span>
           )}
           {statusText && (
@@ -703,7 +1159,7 @@ export default function EditorClient({
             History ({versions.length})
           </button>
 
-          {isOwner && (
+          {(currentPermission === "OWNER" || user.role === "ADMIN") && (
             <button
               onClick={() => {
                 setShowShare(true);
@@ -716,7 +1172,7 @@ export default function EditorClient({
             </button>
           )}
 
-          {canEdit && (
+          {canEditCanvas && (
             <button
               onClick={manualSave}
               disabled={saving === "saving"}
@@ -727,7 +1183,7 @@ export default function EditorClient({
             </button>
           )}
 
-          {isOwner && !isDeleted && (
+          {(currentPermission === "OWNER" || user.role === "ADMIN") && !isDeleted && (
             <button
               onClick={deleteDoc}
               className="p-1.5 text-gray-400 hover:text-red-600 rounded text-sm"
@@ -739,18 +1195,47 @@ export default function EditorClient({
         </div>
       </header>
 
+      {isReadOnlyBanner && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between text-sm">
+          <span className="text-amber-800">
+            {leaseMode === "lost" ? "Editing was taken over. You are now viewing read-only." : "You are viewing read-only."}
+          </span>
+          <button
+            onClick={handleTakeover}
+            disabled={leaseBusy}
+            className="px-3 py-1 rounded bg-amber-600 text-white hover:bg-amber-700 disabled:bg-amber-300 text-xs font-medium"
+          >
+            {leaseBusy ? "Requesting..." : "Take over editing"}
+          </button>
+        </div>
+      )}
+
       {/* Main Excalidraw Canvas */}
       <main className="flex-1 relative min-h-0">
-        {recoveryReady && !draftConflict ? (
+        {leaseMode === "acquiring" && (
+          <div className="w-full h-full flex items-center justify-center text-sm text-gray-500">
+            Acquiring edit lease…
+          </div>
+        )}
+        {showLeaseConflict && leaseHolder && (
+          <EditLeaseConflictModal
+            holder={leaseHolder}
+            busy={leaseBusy}
+            error={leaseError}
+            onReadOnly={handleOpenReadOnly}
+            onTakeover={handleTakeover}
+          />
+        )}
+        {showCanvas ? (
           <ExcalidrawCanvas
             key={`canvas-${docId}-${canvasKey}`}
             docId={docId}
             initialScene={initialCanvasScene}
-            readOnly={!canEdit}
+            readOnly={!canEditCanvas}
             onSceneChange={handleChange}
             theme={theme}
           />
-        ) : (
+        ) : leaseMode === "blocked" ? null : (
           <div className="w-full h-full flex items-center justify-center text-sm text-gray-500">
             Checking for unsaved changes…
           </div>
@@ -809,7 +1294,7 @@ export default function EditorClient({
 
                     <div className="text-xs text-gray-600 flex items-center justify-between">
                       <span>By: {v.created_by_username || "User"}</span>
-                      {canEdit && (
+                      {canEditCanvas && (
                         <button
                           onClick={() => restoreVersion(v.id)}
                           className="text-xs text-blue-600 hover:text-blue-800 font-semibold underline"
