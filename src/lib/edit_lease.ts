@@ -353,6 +353,9 @@ export function pollEditTakeover(input: PollTakeoverInput, now?: Date): LeaseRes
       throw new HttpError(404, "Lease not found", "EDIT_LEASE_LOST");
     }
     if (!row.takeover_request_id) {
+      if (isExpired(row, nowDate)) {
+        throw new HttpError(409, "Editing lease was lost", "EDIT_LEASE_LOST");
+      }
       // No pending; return held if not holder, acquired if holder matches
       if (
         row.holder_user_id === input.userId &&

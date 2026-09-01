@@ -16,6 +16,7 @@ export interface SaveDocumentOptions {
   signal?: AbortSignal;
   fetchFn?: typeof fetch;
   lease: EditLeaseCredentials;
+  adminMode?: boolean;
 }
 
 export interface SaveDocumentResult {
@@ -127,6 +128,7 @@ export interface ResolveClientRecoveryOptions {
   persistedFileIds: Set<string>;
   fetchFn?: typeof fetch;
   lease: EditLeaseCredentials;
+  adminMode?: boolean;
 }
 
 export type ResolveClientRecoveryResult =
@@ -311,6 +313,7 @@ export async function saveDocumentScene(options: SaveDocumentOptions): Promise<S
   const base = typeof window !== "undefined" && window.location ? window.location.origin : "http://localhost";
   const path = isManualSave ? `/api/documents/${encodeURIComponent(docId)}/save` : `/api/documents/${encodeURIComponent(docId)}/scene`;
   const url = new URL(path, base);
+  if (options.adminMode) url.searchParams.set("adminMode", "1");
 
   const payload = isManualSave
     ? { scene: compactScene, lease, ...(thumbnailBase64 ? { thumbnailBase64 } : {}) }
@@ -351,6 +354,7 @@ export async function resolveClientRecovery(
   const base = typeof window !== "undefined" && window.location ? window.location.origin : "http://localhost";
   const path = `/api/documents/${encodeURIComponent(options.docId)}/recovery`;
   const url = new URL(path, base);
+  if (options.adminMode) url.searchParams.set("adminMode", "1");
   const response = await fetchImpl(url.toString(), {
     method: "POST",
     credentials: "include",

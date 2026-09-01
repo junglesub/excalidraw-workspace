@@ -75,10 +75,11 @@ function getBase(): string {
   return "http://localhost";
 }
 
-async function leaseFetchWithHeld(docId: string, body: Record<string, unknown>, fetchFn?: typeof fetch): Promise<LeaseResponse> {
+async function leaseFetchWithHeld(docId: string, body: Record<string, unknown>, fetchFn?: typeof fetch, adminMode?: boolean): Promise<LeaseResponse> {
   const fetchImpl = fetchFn || (typeof window !== "undefined" ? window.fetch.bind(window) : globalThis.fetch);
   const base = getBase();
   const url = new URL(`/api/documents/${encodeURIComponent(docId)}/lease`, base);
+  if (adminMode) url.searchParams.set("adminMode", "1");
   const res = await fetchImpl(url.toString(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -106,28 +107,28 @@ async function leaseFetchWithHeld(docId: string, body: Record<string, unknown>, 
   return data as LeaseResponse;
 }
 
-export function acquireLease(docId: string, identity: LeaseCandidate, fetchFn?: typeof fetch): Promise<LeaseResponse> {
-  return leaseFetchWithHeld(docId, { action: "acquire", clientId: identity.clientId, leaseToken: identity.leaseToken }, fetchFn);
+export function acquireLease(docId: string, identity: LeaseCandidate, fetchFn?: typeof fetch, adminMode?: boolean): Promise<LeaseResponse> {
+  return leaseFetchWithHeld(docId, { action: "acquire", clientId: identity.clientId, leaseToken: identity.leaseToken }, fetchFn, adminMode);
 }
 
-export function heartbeatLease(docId: string, lease: EditLeaseCredentials, fetchFn?: typeof fetch): Promise<LeaseResponse> {
-  return leaseFetchWithHeld(docId, { action: "heartbeat", clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation }, fetchFn);
+export function heartbeatLease(docId: string, lease: EditLeaseCredentials, fetchFn?: typeof fetch, adminMode?: boolean): Promise<LeaseResponse> {
+  return leaseFetchWithHeld(docId, { action: "heartbeat", clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation }, fetchFn, adminMode);
 }
 
-export function requestTakeover(docId: string, candidate: LeaseCandidate & { requestId?: string }, fetchFn?: typeof fetch): Promise<LeaseResponse> {
+export function requestTakeover(docId: string, candidate: LeaseCandidate & { requestId?: string }, fetchFn?: typeof fetch, adminMode?: boolean): Promise<LeaseResponse> {
   const body: Record<string, unknown> = { action: "request_takeover", clientId: candidate.clientId, leaseToken: candidate.leaseToken };
   if (candidate.requestId) body.requestId = candidate.requestId;
-  return leaseFetchWithHeld(docId, body, fetchFn);
+  return leaseFetchWithHeld(docId, body, fetchFn, adminMode);
 }
 
-export function pollTakeover(docId: string, request: TakeoverPoll, fetchFn?: typeof fetch): Promise<LeaseResponse> {
+export function pollTakeover(docId: string, request: TakeoverPoll, fetchFn?: typeof fetch, adminMode?: boolean): Promise<LeaseResponse> {
   const body: Record<string, unknown> = { action: "poll_takeover", clientId: request.clientId, leaseToken: request.leaseToken, requestId: request.requestId };
   if (request.generation !== undefined) body.generation = request.generation;
-  return leaseFetchWithHeld(docId, body, fetchFn);
+  return leaseFetchWithHeld(docId, body, fetchFn, adminMode);
 }
 
-export function releaseLease(docId: string, lease: EditLeaseCredentials, fetchFn?: typeof fetch): Promise<LeaseResponse> {
-  return leaseFetchWithHeld(docId, { action: "release", clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation }, fetchFn);
+export function releaseLease(docId: string, lease: EditLeaseCredentials, fetchFn?: typeof fetch, adminMode?: boolean): Promise<LeaseResponse> {
+  return leaseFetchWithHeld(docId, { action: "release", clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation }, fetchFn, adminMode);
 }
 
 export function canMutateCanvas(mode: EditorLeaseMode): boolean {

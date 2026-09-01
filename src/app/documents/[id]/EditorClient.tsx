@@ -63,6 +63,7 @@ interface Props {
   initialUpdatedAt?: string;
   permission: Permission;
   deleted: boolean;
+  adminMode?: boolean;
 }
 
 interface DraftConflictState {
@@ -99,12 +100,15 @@ export default function EditorClient({
   initialUpdatedAt,
   permission: initialPermission,
   deleted: initialDeleted,
+  adminMode: initialAdminMode = false,
 }: Props) {
   const router = useRouter();
   const [currentPermission, setCurrentPermission] = useState<Permission>(initialPermission);
   const [isDeleted, setIsDeleted] = useState(initialDeleted);
 
   const hasWritePermission = currentPermission !== "VIEWER" && !isDeleted;
+  const adminMode = initialAdminMode;
+  const withAdminMode = (url: string) => adminMode ? `${url}${url.includes("?") ? "&" : "?"}adminMode=1` : url;
   // lease mode state
   const [leaseMode, setLeaseMode] = useState<"viewer" | "acquiring" | "blocked" | "active" | "handoff" | "readonly" | "lost">(
     hasWritePermission ? "acquiring" : "viewer"
@@ -120,6 +124,8 @@ export default function EditorClient({
   const handoffGuardRef = useRef(false);
   const heartbeatInFlightRef = useRef(false);
   const takeoverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const takeoverPollInFlightRef = useRef(false);
+  const isRestoringRef = useRef(false);
 
   useEffect(() => { leaseModeRef.current = leaseMode; }, [leaseMode]);
 
@@ -180,7 +186,7 @@ export default function EditorClient({
 
   const loadVersions = useCallback(async () => {
     try {
-      const data = await api<{ versions: VersionRow[] }>(`/api/documents/${docId}/versions`);
+      const data = await api<{ versions: VersionRow[] }>(withAdminMode(`/api/documents/${docId}/versions`));
       setVersions(data.versions);
     } catch {
       // ignore
@@ -192,8 +198,8 @@ export default function EditorClient({
     if (!isOwner) return;
     try {
       const [linkData, memberData] = await Promise.all([
-        api<{ link: ShareLinkInfo | null }>(`/api/documents/${docId}/share/link`),
-        api<{ members: MemberRow[] }>(`/api/documents/${docId}/share/members`),
+        api<{ link: ShareLinkInfo | null }>(withAdminMode(`/api/documents/${docId}/share/link`)),
+        api<{ members: MemberRow[] }>(withAdminMode(`/api/documents/${docId}/share/members`)),
       ]);
       setShareLink(linkData.link);
       setMembers(memberData.members);
@@ -225,7 +231,7 @@ export default function EditorClient({
     leaseCredentialsRef.current = null;
     // Do not clear localStorage draft
     try {
-      const data = await api<{ document: { title: string }; scene: ExcalidrawScene; permission: Permission }>(`/api/documents/${docId}`);
+      const data = await api<{ document: { title: string }; scene: ExcalidrawScene; permission: Permission }>(withAdminMode(`/api/documents/${docId}`));
       sceneRef.current = data.scene;
       lastSavedContentRef.current = serializeSceneForComparison(data.scene);
       // isDirtyRef should remain true if dirty? But spec says old editor retains unconfirmed draft, so keep isDirty true
@@ -253,7 +259,7 @@ export default function EditorClient({
 
   const finalizeAcquisition = useCallback(async (creds: EditLeaseCredentials) => {
     try {
-      const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
+      const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(withAdminMode(`/api/documents/${docId}`));
       const serverScene = data.scene;
       const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || "";
       const decision = decideDraftForAccess(true, () => {
@@ -287,7 +293,7 @@ export default function EditorClient({
       }
       setLeaseMode("active");
     } catch (err) {
-      try { await releaseLease(docId, creds); } catch {}
+      try { await releaseLease(docId, creds, undefined, adminMode); } catch {}
       leaseCredentialsRef.current = null;
       sceneRef.current = initialScene;
       lastSavedContentRef.current = serializeSceneForComparison(initialScene);
@@ -318,7 +324,7 @@ export default function EditorClient({
         leaseClientIdRef.current = clientId;
         const leaseToken = crypto.randomUUID();
         leaseTokenRef.current = leaseToken;
-        const result = await acquireLease(docId, { clientId, leaseToken });
+        const result = await acquireLease(docId, { clientId, leaseToken }, undefined, adminMode);
         if (cancelled) return;
         if (result.state === "acquired") {
           const creds = { clientId, leaseToken, generation: result.generation };
@@ -345,14 +351,28 @@ export default function EditorClient({
       }
     };
     void doAcquire();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      const creds = leaseCredentialsRef.current;
+      if (creds) {
+        const url = withAdminMode(`/api/documents/${encodeURIComponent(docId)}/lease`);
+        const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
+        try {
+          if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+            navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
+          } else {
+            fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, credentials: "include", keepalive: true } as RequestInit);
+          }
+        } catch {}
+      }
+    };
   }, [docId, hasWritePermission, finalizeAcquisition]);
 
   const handleOpenReadOnly = useCallback(async () => {
     setLeaseBusy(true);
     setLeaseError(null);
     try {
-      const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
+      const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(withAdminMode(`/api/documents/${docId}`));
       sceneRef.current = data.scene;
       lastSavedContentRef.current = serializeSceneForComparison(data.scene);
       persistedFileIdsRef.current = new Set(Object.keys(data.scene.files || {}));
@@ -377,7 +397,7 @@ export default function EditorClient({
     const leaseToken = crypto.randomUUID();
     leaseTokenRef.current = leaseToken;
     try {
-      const result = await requestTakeover(docId, { clientId, leaseToken });
+      const result = await requestTakeover(docId, { clientId, leaseToken }, undefined, adminMode);
       if (result.state === "acquired") {
         const creds = { clientId, leaseToken, generation: result.generation };
         leaseCredentialsRef.current = creds;
@@ -389,9 +409,12 @@ export default function EditorClient({
         const requestId = result.requestId;
         // Poll every 1s until acquired
         if (takeoverPollRef.current) clearInterval(takeoverPollRef.current);
+        takeoverPollInFlightRef.current = false;
         takeoverPollRef.current = setInterval(async () => {
+          if (takeoverPollInFlightRef.current) return;
+          takeoverPollInFlightRef.current = true;
           try {
-            const pollRes = await pollTakeover(docId, { clientId, leaseToken, requestId });
+            const pollRes = await pollTakeover(docId, { clientId, leaseToken, requestId }, undefined, adminMode);
             if (pollRes.state === "acquired") {
               if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
               const creds = { clientId, leaseToken, generation: pollRes.generation };
@@ -400,13 +423,27 @@ export default function EditorClient({
               setLeaseBusy(false);
             } else if (pollRes.state === "takeover_pending") {
               // still waiting
+            } else if ((pollRes as { state: string }).state === "takeover_in_progress") {
+              setLeaseError("Another takeover is in progress. Please try again.");
+              if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
+              setLeaseBusy(false);
+            } else if ((pollRes as { state: string }).state === "held") {
+              setLeaseError("Takeover failed. Please retry.");
+              if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
+              setLeaseBusy(false);
             }
           } catch (err) {
             if (err instanceof ApiError && err.code === "EDIT_LEASE_LOST") {
-              // lost, but we are requester, shouldn't happen
+              setLeaseError("Takeover failed. Please retry.");
+              if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
+              setLeaseBusy(false);
+            } else if (err instanceof ApiError && err.code === "TAKEOVER_IN_PROGRESS") {
+              setLeaseError("Another takeover is in progress. Please try again.");
+              if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
+              setLeaseBusy(false);
             }
-            // If poll returns takeover_in_progress due to other request, it will be returned as object not throw, but our transport returns object for that.
-            // If 409 with state takeover_in_progress, our pollTakeover will return object, not throw, so handle above.
+          } finally {
+            takeoverPollInFlightRef.current = false;
           }
         }, 1000);
         return;
@@ -435,7 +472,7 @@ export default function EditorClient({
       if (heartbeatInFlightRef.current) return;
       heartbeatInFlightRef.current = true;
       try {
-        const res = await heartbeatLease(docId, creds);
+        const res = await heartbeatLease(docId, creds, undefined, adminMode);
         if (res.state === "takeover_pending") {
           if (handoffGuardRef.current) return;
           handoffGuardRef.current = true;
@@ -453,9 +490,10 @@ export default function EditorClient({
               isManualSave: false,
               snapshotDue: false,
               lease: creds,
+              adminMode,
             });
-            await releaseLease(docId, creds);
-            const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
+            await releaseLease(docId, creds, undefined, adminMode);
+            const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(withAdminMode(`/api/documents/${docId}`));
             sceneRef.current = data.scene;
             lastSavedContentRef.current = serializeSceneForComparison(data.scene);
             persistedFileIdsRef.current = new Set(Object.keys(data.scene.files || {}));
@@ -512,15 +550,26 @@ export default function EditorClient({
     return false;
   }, [handleLeaseLost]);
 
-  // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       if (statusTimerRef.current) clearTimeout(statusTimerRef.current);
       if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
       if (takeoverPollRef.current) clearInterval(takeoverPollRef.current);
+      const creds = leaseCredentialsRef.current;
+      if (creds) {
+        const url = withAdminMode(`/api/documents/${encodeURIComponent(docId)}/lease`);
+        const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
+        try {
+          if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+            navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
+          } else {
+            fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: payload, credentials: "include", keepalive: true } as RequestInit);
+          }
+        } catch {}
+      }
     };
-  }, []);
+  }, [docId]);
 
   const executeSave = useCallback(
     async (forceSnapshot: boolean) => {
@@ -553,6 +602,7 @@ export default function EditorClient({
             isManualSave: currentSnapshot,
             snapshotDue: currentSnapshot,
             lease: creds,
+            adminMode,
           });
           lastResult = res;
 
@@ -619,7 +669,7 @@ export default function EditorClient({
 
   const handleChange = useCallback(
     (s: ExcalidrawScene) => {
-      if (!canEditCanvas) return;
+      if (!canEditCanvas || isRestoringRef.current) return;
 
       // Keep the latest in-memory files (hydrated dataURLs) even when not dirty,
       // so thumbnail exportToBlob can rasterize images.
@@ -697,7 +747,7 @@ export default function EditorClient({
       if (!creds) return;
       const compactScene = buildCompactClientScene(sceneRef.current);
       const base = typeof window !== "undefined" && window.location ? window.location.origin : "";
-      const url = `${base}/api/documents/${encodeURIComponent(docId)}/scene`;
+      const url = withAdminMode(`${base}/api/documents/${encodeURIComponent(docId)}/scene`);
       try {
         fetch(url, {
           method: "PUT",
@@ -723,7 +773,7 @@ export default function EditorClient({
       const creds = leaseCredentialsRef.current;
       if (!creds) return;
       const base = typeof window !== "undefined" && window.location ? window.location.origin : "";
-      const url = `${base}/api/documents/${encodeURIComponent(docId)}/lease`;
+      const url = withAdminMode(`${base}/api/documents/${encodeURIComponent(docId)}/lease`);
       const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
       try {
         if (navigator.sendBeacon) {
@@ -762,6 +812,7 @@ export default function EditorClient({
           draft: draftConflict.draft,
           persistedFileIds: persistedFileIdsRef.current,
           lease: creds,
+          adminMode,
         });
         if (!result.ok) {
           setDraftConflict((current) =>
@@ -818,7 +869,7 @@ export default function EditorClient({
       return;
     }
     try {
-      const res = await api<{ document: { title: string } }>(`/api/documents/${docId}`, {
+      const res = await api<{ document: { title: string } }>(withAdminMode(`/api/documents/${docId}`), {
         method: "PATCH",
         body: JSON.stringify({ title: trimmed }),
       });
@@ -831,21 +882,22 @@ export default function EditorClient({
   }
 
   async function restoreVersion(versionId: string) {
-    if (!canEditCanvas) return;
+    if (!canEditCanvas || isRestoringRef.current) return;
     if (!confirm("Restore this version? A snapshot of the current state will be saved before restoring.")) {
       return;
     }
+    isRestoringRef.current = true;
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null; }
     try {
+      await waitForNoSaving(isSavingRef);
       const creds = leaseCredentialsRef.current;
       if (!creds) throw new ApiError(409, "Editing lease was lost", "EDIT_LEASE_LOST");
       setStatus("Restoring version...", "saving");
-      await api(`/api/documents/${docId}/versions?action=restore&versionId=${versionId}`, {
+      await api(withAdminMode(`/api/documents/${docId}/versions?action=restore&versionId=${versionId}`), {
         method: "POST",
         body: JSON.stringify({ lease: creds }),
       });
-      const data = await api<{ document: { title: string }; scene: ExcalidrawScene; permission: Permission }>(
-        `/api/documents/${docId}`,
-      );
+      const data = await api<{ document: { title: string }; scene: ExcalidrawScene; permission: Permission }>(withAdminMode(`/api/documents/${docId}`));
       sceneRef.current = data.scene;
       lastSavedContentRef.current = serializeSceneForComparison(data.scene);
       isDirtyRef.current = false;
@@ -861,13 +913,15 @@ export default function EditorClient({
     } catch (err) {
       if (await handleLeaseLostForMutation(err)) return;
       setStatus(err instanceof Error ? err.message : "Failed to restore version", "error");
+    } finally {
+      isRestoringRef.current = false;
     }
   }
 
   async function deleteDoc() {
     if (!confirm("Move this document to Trash?")) return;
     try {
-      await api(`/api/documents/${docId}`, { method: "DELETE" });
+      await api(withAdminMode(`/api/documents/${docId}`), { method: "DELETE" });
       router.push("/dashboard");
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to delete document");
@@ -881,7 +935,7 @@ export default function EditorClient({
     setShareSuccess(null);
     if (!newMemberUsername.trim()) return;
     try {
-      const res = await api<{ members: MemberRow[] }>(`/api/documents/${docId}/share/members`, {
+      const res = await api<{ members: MemberRow[] }>(withAdminMode(`/api/documents/${docId}/share/members`), {
         method: "POST",
         body: JSON.stringify({ username: newMemberUsername.trim() }),
       });
@@ -897,8 +951,7 @@ export default function EditorClient({
     setShareError(null);
     setShareSuccess(null);
     try {
-      const res = await api<{ members: MemberRow[] }>(
-        `/api/documents/${docId}/share/members?userId=${userId}`,
+      const res = await api<{ members: MemberRow[] }>(withAdminMode(`/api/documents/${docId}/share/members?userId=${userId}`),
         { method: "DELETE" },
       );
       setMembers(res.members);
@@ -912,7 +965,7 @@ export default function EditorClient({
     setShareError(null);
     setShareSuccess(null);
     try {
-      const res = await api<{ link: ShareLinkInfo }>(`/api/documents/${docId}/share/link`, {
+      const res = await api<{ link: ShareLinkInfo }>(withAdminMode(`/api/documents/${docId}/share/link`), {
         method: "POST",
         body: JSON.stringify({ expiresAt: linkExpiresAt || null }),
       });
@@ -927,7 +980,7 @@ export default function EditorClient({
     setShareError(null);
     setShareSuccess(null);
     try {
-      await api(`/api/documents/${docId}/share/link`, { method: "DELETE" });
+      await api(withAdminMode(`/api/documents/${docId}/share/link`), { method: "DELETE" });
       setShareLink(null);
       setShareSuccess("Share link deactivated");
     } catch (err) {
@@ -949,7 +1002,7 @@ export default function EditorClient({
       return;
     }
     try {
-      await api(`/api/documents/${docId}/transfer`, {
+      await api(withAdminMode(`/api/documents/${docId}/transfer`), {
         method: "POST",
         body: JSON.stringify({ username: target }),
       });
@@ -1069,7 +1122,7 @@ export default function EditorClient({
           </button>
 
           <a
-            href={`/api/documents/${docId}/export`}
+            href={withAdminMode(`/api/documents/${docId}/export`)}
             download
             className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded font-medium flex items-center gap-1"
           >
@@ -1121,9 +1174,12 @@ export default function EditorClient({
 
       {isReadOnlyBanner && (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between text-sm">
-          <span className="text-amber-800">
-            {leaseMode === "lost" ? "Editing was taken over. You are now viewing read-only." : "You are viewing read-only."}
-          </span>
+          <div className="flex flex-col">
+            <span className="text-amber-800">
+              {leaseMode === "lost" ? "Editing was taken over. You are now viewing read-only." : "You are viewing read-only."}
+            </span>
+            {leaseError && <span role="alert" className="text-xs text-red-700 mt-1">{leaseError}</span>}
+          </div>
           <button
             onClick={handleTakeover}
             disabled={leaseBusy}
