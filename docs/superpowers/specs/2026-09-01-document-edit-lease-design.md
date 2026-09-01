@@ -149,6 +149,13 @@ An ordinary release clears the holder and pending fields but retains the row and
 
 On `pagehide`, the browser sends a best-effort credentialed release using `navigator.sendBeacon` or `fetch(..., { keepalive: true })`. Local draft safety must not depend on release succeeding.
 
+### Re-entry semantics
+
+The lease `clientId` is stored in `sessionStorage` and is therefore per-tab: it survives reload and in-app navigation within one tab, but a second tab, new window, or a relaunched browser always presents a new `clientId`. Each page instance generates a fresh lease token. The server uses this to distinguish re-entry:
+
+- Same user + same `clientId` + different token = the same tab re-entered. `acquire` re-acquires immediately, rotating the token and advancing the generation so the previous page instance's in-flight requests (including a late pagehide release) are fenced out. This is the immediate reload/navigation re-entry path.
+- Same user + different `clientId` = a second screen. It is indistinguishable server-side from a relaunched browser, so it stays behind the conflict prompt with the takeover path. Immediate no-takeover recovery is only possible once the holder heartbeat is stale (past the 10-second takeover deadline), and it never destroys a structurally valid pending takeover.
+
 ## 8. API contract
 
 Use one route at `/api/documents/[id]/lease` with action-based JSON requests. This keeps the disposable lease subsystem in one API file.

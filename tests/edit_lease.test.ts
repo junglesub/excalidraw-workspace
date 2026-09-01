@@ -52,13 +52,23 @@ describe("Document edit lease state machine", () => {
       expect(retry.generation).toBe(firstGen);
     }
 
-    const held = acquireEditLease(identity(doc.id, owner.id, { leaseToken: "token-b" }), NOW);
-    expect(held).toMatchObject({ state: "held" });
-    expect(JSON.stringify(held)).not.toContain("token-a");
-    expect(JSON.stringify(held)).not.toContain("client-a");
+    // Same tab re-entry (same per-tab clientId, fresh page token) re-acquires immediately
+    const reacquired = acquireEditLease(identity(doc.id, owner.id, { leaseToken: "token-b" }), NOW);
+    expect(reacquired).toMatchObject({ state: "acquired" });
+    if (reacquired.state === "acquired") {
+      expect(reacquired.generation).toBe(firstGen + 1);
+      expect(reacquired.clientId).toBe("client-a");
+      expect(reacquired.leaseToken).toBe("token-b");
+    }
+
+    // A second live tab/session of the same user (different clientId, fresh heartbeat) is held
+    const secondTab = acquireEditLease(identity(doc.id, owner.id, { clientId: "client-b", leaseToken: "token-c" }), NOW);
+    expect(secondTab).toMatchObject({ state: "held" });
+    expect(JSON.stringify(secondTab)).not.toContain("token-b");
+    expect(JSON.stringify(secondTab)).not.toContain("client-a");
     // holder summary should not leak tokens
-    if (held.state === "held") {
-      expect(JSON.stringify(held.holder)).not.toContain("token");
+    if (secondTab.state === "held") {
+      expect(JSON.stringify(secondTab.holder)).not.toContain("token");
     }
   });
 

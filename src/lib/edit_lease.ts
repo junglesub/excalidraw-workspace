@@ -212,17 +212,23 @@ export function acquireEditLease(input: LeaseIdentityInput, now?: Date): LeaseRe
       return toAcquiredResult(updated);
     }
 
-    // Same-user re-entry after close/reopen: the pagehide release is best-effort and
-    // may not reach the server on browser close, leaving this user's own lease held
-    // with no active editor heartbeating. Re-acquire immediately only when the
-    // holder heartbeat is stale (no live tab), preserving the genuine conflict for a
-    // second simultaneously open tab of the same user (spec: one editor across tabs)
-    // and for any structurally valid pending takeover.
+    // Re-entry handling for the same user (evidence-based semantics):
+    // - sessionStorage clientId is per-tab and survives reload/navigation, while each
+    //   page instance generates a fresh lease token (EditorClient). Therefore
+    //   same user + same per-tab clientId + different token means the SAME tab
+    //   re-entered (reload/navigation): re-acquire immediately, rotating the token and
+    //   advancing generation so the previous page instance's in-flight requests
+    //   (including a late best-effort pagehide release) are fenced out.
+    // - A second tab, new window, or relaunched browser always presents a different
+    //   clientId and is indistinguishable server-side from any other screen of the
+    //   same user, so the global one-editor conflict is preserved. Recovery without
+    //   takeover is only possible once the holder heartbeat is stale
+    //   (> TAKEOVER_TIMEOUT_MS), consistent with forced-takeover semantics.
     if (row.holder_user_id === input.userId) {
       const lastBeat = row.heartbeat_at ? Date.parse(row.heartbeat_at) : NaN;
       const heartbeatStale = Number.isNaN(lastBeat) || nowDate.getTime() - lastBeat > TAKEOVER_TIMEOUT_MS;
       const pendingBlocked = !!row.takeover_request_id && !isTakeoverExpired(row, nowDate);
-      if (heartbeatStale && !pendingBlocked) {
+      if (!pendingBlocked && (row.holder_client_id === input.clientId || heartbeatStale)) {
         const generation = row.generation + 1;
         const iso = nowDate.toISOString();
         const expiresAt = new Date(nowDate.getTime() + LEASE_TTL_MS).toISOString();
@@ -236,7 +242,7 @@ export function acquireEditLease(input: LeaseIdentityInput, now?: Date): LeaseRe
       }
     }
 
-    // Held by an active editor (another user, or a second live tab of the same user)
+    // Held by an active editor (another user, or a second live tab/session of the same user)
     return {
       state: "held",
       holder: holderSummaryFromRow(row),
