@@ -332,22 +332,17 @@ export class InitialLeaseCoordinator {
     return this.candidate;
   }
 
-  public getFlightPromise(): Promise<LeaseResponse> | null {
-    return this.flightPromise;
-  }
-
-  public isSettled(): boolean {
-    return this.settledResult !== null;
-  }
-
   private resolveCandidate(): InitialLeaseCandidate {
     if (this.candidate) return this.candidate;
     const clientId = typeof this.clientIdResolver === "function" ? this.clientIdResolver() : this.clientIdResolver;
-    const leaseToken = this.leaseTokenResolver
-      ? typeof this.leaseTokenResolver === "function"
-        ? this.leaseTokenResolver()
-        : this.leaseTokenResolver
-      : (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `token_${Date.now()}_${Math.random()}`);
+    let leaseToken: string;
+    if (this.leaseTokenResolver) {
+      leaseToken = typeof this.leaseTokenResolver === "function" ? this.leaseTokenResolver() : this.leaseTokenResolver;
+    } else if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      leaseToken = crypto.randomUUID();
+    } else {
+      throw new Error("Cryptographically secure randomUUID is not available");
+    }
     const prior = typeof this.priorResolver === "function" ? this.priorResolver(clientId) : (this.priorResolver ?? null);
     this.candidate = { clientId, leaseToken, prior };
     return this.candidate;
@@ -380,7 +375,16 @@ export class InitialLeaseCoordinator {
     if (this.settledResult) {
       this.deliverSettled(subscriber, this.settledResult);
     } else if (!this.flightPromise) {
-      const candidate = this.resolveCandidate();
+      let candidate: InitialLeaseCandidate;
+      try {
+        candidate = this.resolveCandidate();
+      } catch (err) {
+        const settled: SettledResult = { state: "error", error: err };
+        this.settledResult = settled;
+        this.deliverSettled(subscriber, settled);
+        return () => {};
+      }
+
       const payload: LeaseCandidate & { priorLeaseToken?: string; priorGeneration?: number } = {
         clientId: candidate.clientId,
         leaseToken: candidate.leaseToken,
@@ -444,13 +448,5 @@ export class InitialLeaseCoordinator {
     } catch {
       // ignore
     }
-  }
-
-  public dispose(): void {
-    this.activeSubscriber = null;
-    if (this.settledResult?.state === "acquired") {
-      this.releaseOnce(this.settledResult.creds);
-    }
-    this.isReleased = true;
   }
 }

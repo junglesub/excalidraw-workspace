@@ -272,9 +272,11 @@ export default function EditorClient({
     }
   }, [docId, draftConflict, setStatus]);
 
-  const finalizeAcquisition = useCallback(async (creds: EditLeaseCredentials) => {
+  const finalizeAcquisition = useCallback(async (creds: EditLeaseCredentials, isCurrent?: () => boolean) => {
     try {
       const data = await api<{ document: { title: string; updated_at?: string }; scene: ExcalidrawScene }>(withAdminMode(`/api/documents/${docId}`));
+      if (isCurrent && !isCurrent()) return;
+
       const serverScene = data.scene;
       const serverUpdatedAt = (data.document as unknown as { updated_at?: string }).updated_at || "";
       const decision = decideDraftForAccess(true, () => {
@@ -308,6 +310,7 @@ export default function EditorClient({
       }
       setLeaseMode("active");
     } catch (err) {
+      if (isCurrent && !isCurrent()) return;
       try { await releaseLease(docId, creds, undefined, adminMode); } catch {}
       leaseCredentialsRef.current = null;
       sceneRef.current = initialScene;
@@ -322,6 +325,7 @@ export default function EditorClient({
   }, [docId, draftKey, initialScene, setStatus]);
 
   const coordinatorRef = useRef<InitialLeaseCoordinator | null>(null);
+  const initialLeaseEpochRef = useRef<number>(0);
 
   // Initial lease gate
   useEffect(() => {
@@ -332,6 +336,9 @@ export default function EditorClient({
       // Ensure no draft handling
       return;
     }
+
+    const epoch = ++initialLeaseEpochRef.current;
+    const isCurrent = () => epoch === initialLeaseEpochRef.current;
 
     setLeaseMode("acquiring");
 
@@ -353,6 +360,7 @@ export default function EditorClient({
 
     const unsubscribe = coordinator.subscribe({
       onAcquired: async (creds) => {
+        if (!isCurrent()) return;
         leaseCredentialsRef.current = creds;
         leaseTokenRef.current = creds.leaseToken;
         leaseClientIdRef.current = creds.clientId;
@@ -360,9 +368,10 @@ export default function EditorClient({
           leaseToken: creds.leaseToken,
           generation: creds.generation,
         });
-        await finalizeAcquisition(creds);
+        await finalizeAcquisition(creds, isCurrent);
       },
       onHeld: (holder, prior) => {
+        if (!isCurrent()) return;
         const candidate = coordinator!.getCandidate();
         const cid = candidate ? candidate.clientId : leaseClientIdRef.current;
         clearStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, cid, prior ?? undefined);
@@ -371,6 +380,7 @@ export default function EditorClient({
         setRecoveryReady(true);
       },
       onError: (err) => {
+        if (!isCurrent()) return;
         sceneRef.current = initialScene;
         lastSavedContentRef.current = serializeSceneForComparison(initialScene);
         persistedFileIdsRef.current = new Set(Object.keys(initialScene.files || {}));
@@ -383,6 +393,7 @@ export default function EditorClient({
     });
 
     return () => {
+      initialLeaseEpochRef.current++;
       unsubscribe();
     };
   }, [docId, hasWritePermission, finalizeAcquisition, adminMode]);

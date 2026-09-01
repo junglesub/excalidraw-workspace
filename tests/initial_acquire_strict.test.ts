@@ -460,4 +460,186 @@ describe("Initial acquire strict mode coordinator", () => {
       { clientId: "client-nav", leaseToken: "token-doc-2", generation: 1 },
     ]);
   });
+
+  it("8. stale async finalization on doc transition: late GET A cannot overwrite B state, reactivate A, or release B", async () => {
+    let resolveGetA!: (scene: { elements: string[] }) => void;
+    const deferredGetA = new Promise<{ elements: string[] }>((resolve) => {
+      resolveGetA = resolve;
+    });
+
+    const mockGetDoc = async (docId: string) => {
+      if (docId === "doc-A") return deferredGetA;
+      if (docId === "doc-B") return { elements: ["element-B"] };
+      return { elements: [] };
+    };
+
+    const state = {
+      currentScene: null as { elements: string[] } | null,
+      activeLeaseMode: "acquiring" as string,
+      storedCredentials: null as EditLeaseCredentials | null,
+    };
+    const releases: EditLeaseCredentials[] = [];
+
+    const finalizeAcquisition = async (
+      docId: string,
+      creds: EditLeaseCredentials,
+      isCurrent?: () => boolean,
+    ) => {
+      try {
+        const data = await mockGetDoc(docId);
+        if (isCurrent && !isCurrent()) return;
+        state.currentScene = data;
+        state.activeLeaseMode = "active";
+      } catch (err) {
+        if (isCurrent && !isCurrent()) return;
+        state.storedCredentials = null;
+        state.activeLeaseMode = "readonly";
+      }
+    };
+
+    let initialLeaseEpoch = 0;
+
+    // --- Mount Doc A ---
+    const epochA = ++initialLeaseEpoch;
+    const isCurrentA = () => epochA === initialLeaseEpoch;
+    const credsA: EditLeaseCredentials = { clientId: "client-epoch", leaseToken: "token-A", generation: 1 };
+    state.storedCredentials = credsA;
+    state.activeLeaseMode = "acquiring";
+
+    const coordinatorA = new InitialLeaseCoordinator({
+      docId: "doc-A",
+      clientId: "client-epoch",
+      leaseToken: "token-A",
+      prior: null,
+      acquireFn: async () => ({
+        state: "acquired",
+        generation: 1,
+        clientId: "client-epoch",
+        leaseToken: "token-A",
+        acquiredAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        expiresAt: new Date().toISOString(),
+      }),
+      releaseFn: (creds) => releases.push(creds),
+    });
+
+    const unsubA = coordinatorA.subscribe({
+      onAcquired: async (creds) => {
+        if (!isCurrentA()) return;
+        void finalizeAcquisition("doc-A", creds, isCurrentA);
+      },
+      onHeld: () => {},
+      onError: () => {},
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    // Doc A acquired, but GET A is still pending
+    expect(state.activeLeaseMode).toBe("acquiring");
+    expect(state.currentScene).toBeNull();
+
+    // --- User navigates to Doc B while GET A is pending ---
+    // Cleanup of Doc A effect advances epoch and unsubscribes
+    initialLeaseEpoch++;
+    unsubA();
+    expect(releases).toEqual([{ clientId: "client-epoch", leaseToken: "token-A", generation: 1 }]);
+
+    // Mount Doc B
+    const epochB = ++initialLeaseEpoch;
+    const isCurrentB = () => epochB === initialLeaseEpoch;
+    const credsB: EditLeaseCredentials = { clientId: "client-epoch", leaseToken: "token-B", generation: 2 };
+    state.storedCredentials = credsB;
+
+    const coordinatorB = new InitialLeaseCoordinator({
+      docId: "doc-B",
+      clientId: "client-epoch",
+      leaseToken: "token-B",
+      prior: null,
+      acquireFn: async () => ({
+        state: "acquired",
+        generation: 2,
+        clientId: "client-epoch",
+        leaseToken: "token-B",
+        acquiredAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        expiresAt: new Date().toISOString(),
+      }),
+      releaseFn: (creds) => releases.push(creds),
+    });
+
+    const unsubB = coordinatorB.subscribe({
+      onAcquired: async (creds) => {
+        if (!isCurrentB()) return;
+        await finalizeAcquisition("doc-B", creds, isCurrentB);
+      },
+      onHeld: () => {},
+      onError: () => {},
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    // Doc B is fully acquired and finalized
+    expect(state.currentScene).toEqual({ elements: ["element-B"] });
+    expect(state.activeLeaseMode).toBe("active");
+    expect(state.storedCredentials).toEqual(credsB);
+
+    // --- Now late GET A resolves with Doc A scene ---
+    resolveGetA({ elements: ["element-A"] });
+    await deferredGetA;
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Stale Doc A completion must NOT overwrite Doc B scene or state
+    expect(state.currentScene).toEqual({ elements: ["element-B"] });
+    expect(state.activeLeaseMode).toBe("active");
+    expect(state.storedCredentials).toEqual(credsB);
+
+    unsubB();
+  });
+
+  it("9. crypto unavailable fails safely via onError without weak token or acquire request", async () => {
+    let acquireCalled = false;
+    let deliveredError: unknown = null;
+
+    const originalCrypto = globalThis.crypto;
+    try {
+      Object.defineProperty(globalThis, "crypto", {
+        value: undefined,
+        configurable: true,
+      });
+
+      const coordinator = new InitialLeaseCoordinator({
+        docId: "doc-no-crypto",
+        clientId: "client-no-crypto",
+        prior: null,
+        acquireFn: async () => {
+          acquireCalled = true;
+          return {
+            state: "acquired",
+            generation: 1,
+            clientId: "client-no-crypto",
+            leaseToken: "weak",
+            acquiredAt: new Date().toISOString(),
+            heartbeatAt: new Date().toISOString(),
+            expiresAt: new Date().toISOString(),
+          };
+        },
+        releaseFn: () => {},
+      });
+
+      coordinator.subscribe({
+        onAcquired: () => {},
+        onHeld: () => {},
+        onError: (err) => {
+          deliveredError = err;
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 0));
+      expect(acquireCalled).toBe(false);
+      expect((deliveredError as Error)?.message).toContain("Cryptographically secure randomUUID is not available");
+    } finally {
+      Object.defineProperty(globalThis, "crypto", {
+        value: originalCrypto,
+        configurable: true,
+      });
+    }
+  });
 });
