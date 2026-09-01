@@ -112,6 +112,7 @@ export default function EditorClient({
   const [leaseHolder, setLeaseHolder] = useState<LeaseHolderSummary | null>(null);
   const [leaseBusy, setLeaseBusy] = useState(false);
   const [leaseError, setLeaseError] = useState<string | null>(null);
+  const leaseModeRef = useRef(leaseMode);
   const leaseCredentialsRef = useRef<EditLeaseCredentials | null>(null);
   const leaseClientIdRef = useRef<string | null>(null);
   const leaseTokenRef = useRef<string | null>(null);
@@ -119,6 +120,8 @@ export default function EditorClient({
   const handoffGuardRef = useRef(false);
   const heartbeatInFlightRef = useRef(false);
   const takeoverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => { leaseModeRef.current = leaseMode; }, [leaseMode]);
 
   const canEditCanvas = canMutateCanvas(leaseMode as unknown as "active" | "viewer" | "blocked" | "readonly" | "handoff" | "lost" | "acquiring");
 
@@ -327,17 +330,16 @@ export default function EditorClient({
           setRecoveryReady(true);
         }
       } catch (err) {
-        if (err instanceof ApiError) {
-          if (err.code === "EDIT_LEASE_HELD" || err.status === 409) {
-            // Try to parse holder from error? Our transport returns held object not throw for acquire, so this shouldn't happen
-            setLeaseMode("blocked");
-          } else {
-            setLeaseError(err.message);
-            setLeaseMode("blocked");
-          }
-        } else {
-          setLeaseError(err instanceof Error ? err.message : "Failed to acquire lease");
+        if (err instanceof ApiError && (err.code === "EDIT_LEASE_HELD" || err.status === 409)) {
           setLeaseMode("blocked");
+        } else {
+          sceneRef.current = initialScene;
+          lastSavedContentRef.current = serializeSceneForComparison(initialScene);
+          persistedFileIdsRef.current = new Set(Object.keys(initialScene.files || {}));
+          setInitialCanvasScene(initialScene);
+          setCanvasKey((k) => k + 1);
+          setLeaseError(err instanceof Error ? err.message : "Failed to acquire lease. Please retry takeover.");
+          setLeaseMode("readonly");
         }
         setRecoveryReady(true);
       }
@@ -470,18 +472,11 @@ export default function EditorClient({
               void handleLeaseLost(isDirty);
             } else {
               setStatus("Failed to flush changes for handover; will retry until takeover completes.", "error");
-              try {
-                const data = await api<{ document: { title: string }; scene: ExcalidrawScene }>(`/api/documents/${docId}`);
-                sceneRef.current = data.scene;
-                lastSavedContentRef.current = serializeSceneForComparison(data.scene);
-                setInitialCanvasScene(data.scene);
-                setCanvasKey((k) => k + 1);
-              } catch {}
             }
           } finally {
             handoffGuardRef.current = false;
           }
-        } else if (shouldRecoverHandoffToActive(leaseMode as EditorLeaseMode, res.state)) {
+        } else if (shouldRecoverHandoffToActive(leaseModeRef.current as EditorLeaseMode, res.state)) {
           setLeaseMode("active");
           handoffGuardRef.current = false;
         }

@@ -150,6 +150,3 @@ export function shouldRecoverHandoffToActive(currentMode: EditorLeaseMode, heart
   return currentMode === "handoff" && heartbeatState === "acquired";
 }
 
-export function getAcquisitionFailureRecovery(): { mode: EditorLeaseMode; shouldRelease: boolean; shouldReadDraft: boolean; shouldMountEditable: boolean; retryable: boolean } {
-  return { mode: "readonly", shouldRelease: true, shouldReadDraft: false, shouldMountEditable: false, retryable: true };
-}
