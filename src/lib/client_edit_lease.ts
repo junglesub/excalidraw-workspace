@@ -151,3 +151,6 @@ export function shouldRecoverHandoffToActive(currentMode: EditorLeaseMode, heart
   return currentMode === "handoff" && heartbeatState === "acquired";
 }
 
+export function credentialKey(creds: EditLeaseCredentials): string {
+  return `${creds.clientId}:${creds.leaseToken}:${creds.generation}`;
+}

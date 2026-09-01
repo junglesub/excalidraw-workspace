@@ -109,9 +109,12 @@ export default function EditorClient({
   const hasWritePermission = currentPermission !== "VIEWER" && !isDeleted;
   const adminMode = initialAdminMode;
   const withAdminMode = (url: string) => adminMode ? `${url}${url.includes("?") ? "&" : "?"}adminMode=1` : url;
+  const hasReleasedRef = useRef<Set<string>>(new Set());
   const bestEffortReleaseOnce = (creds: { clientId: string; leaseToken: string; generation: number } | null) => {
-    if (!creds || hasReleasedRef.current) return;
-    hasReleasedRef.current = true;
+    if (!creds) return;
+    const key = `${creds.clientId}:${creds.leaseToken}:${creds.generation}`;
+    if (hasReleasedRef.current.has(key)) return;
+    hasReleasedRef.current.add(key);
     const url = withAdminMode(`/api/documents/${encodeURIComponent(docId)}/lease`);
     const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
     try {
@@ -139,7 +142,6 @@ export default function EditorClient({
   const takeoverPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const takeoverPollInFlightRef = useRef(false);
   const isRestoringRef = useRef(false);
-  const hasReleasedRef = useRef(false);
 
   useEffect(() => { leaseModeRef.current = leaseMode; }, [leaseMode]);
 
@@ -348,7 +350,6 @@ export default function EditorClient({
         if (result.state === "acquired") {
           const creds = { clientId, leaseToken, generation: result.generation };
           leaseCredentialsRef.current = creds;
-          hasReleasedRef.current = false;
           await finalizeAcquisition(creds);
         } else if (result.state === "held") {
           setLeaseHolder(result.holder);
@@ -406,7 +407,6 @@ export default function EditorClient({
       if (result.state === "acquired") {
         const creds = { clientId, leaseToken, generation: result.generation };
         leaseCredentialsRef.current = creds;
-        hasReleasedRef.current = false;
         await finalizeAcquisition(creds);
         setLeaseBusy(false);
         return;
@@ -425,7 +425,6 @@ export default function EditorClient({
               if (takeoverPollRef.current) { clearInterval(takeoverPollRef.current); takeoverPollRef.current = null; }
               const creds = { clientId, leaseToken, generation: pollRes.generation };
               leaseCredentialsRef.current = creds;
-              hasReleasedRef.current = false;
               await finalizeAcquisition(creds);
               setLeaseBusy(false);
             } else if (pollRes.state === "takeover_pending") {
