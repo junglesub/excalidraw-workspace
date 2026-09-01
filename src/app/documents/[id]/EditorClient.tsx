@@ -20,7 +20,7 @@ import {
   getManualSaveStatus,
 } from "@/lib/client_save";
 import { acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, waitForNoSaving, shouldRecoverHandoffToActive, shouldSkipHandoffForRestore, credentialKey, dispatchRelease, getEditorContextId, readStoredLeaseCredentials, storeLeaseCredentials, clearStoredLeaseCredentials } from "@/lib/client_edit_lease";
-import type { EditorLeaseMode } from "@/lib/client_edit_lease";
+import type { EditorLeaseMode, StoredLeaseCredentials } from "@/lib/client_edit_lease";
 import type { EditLeaseCredentials, ExcalidrawScene, Permission, LeaseHolderSummary } from "@/lib/types";
 import type { LocalDraftEnvelope } from "@/lib/client_save";
 
@@ -321,6 +321,14 @@ export default function EditorClient({
     }
   }, [docId, draftKey, initialScene, setStatus]);
 
+  const initialAcquirePromiseRef = useRef<Promise<void> | null>(null);
+  const initialAcquireCandidateRef = useRef<{
+    clientId: string;
+    leaseToken: string;
+    prior: StoredLeaseCredentials | null;
+  } | null>(null);
+  const initialAcquireFinalizedRef = useRef(false);
+
   // Initial lease gate
   useEffect(() => {
     if (!hasWritePermission) {
@@ -330,10 +338,35 @@ export default function EditorClient({
       // Ensure no draft handling
       return;
     }
-    // Writable: acquire lease before editable mount
+    // Writable: acquire lease before editable mount.
+    // Strict Mode replay protection: share a single acquire promise across the mount/unmount/replay
+    // cycle so that only one HTTP request is sent and only the active effect finalizes it.
+    // See tests/initial_acquire_strict.test.ts for the bug this prevents.
     let cancelled = false;
     const doAcquire = async () => {
       setLeaseMode("acquiring");
+
+      // ----- Replay (Strict Mode second mount) -----
+      if (initialAcquirePromiseRef.current && initialAcquireCandidateRef.current) {
+        const state = initialAcquireCandidateRef.current;
+        // Awaited the same in-flight acquire; the first instance already processed the result.
+        // If we're cancelled (genuine unmount of the active instance), release.
+        try {
+          await initialAcquirePromiseRef.current;
+        } catch {
+          // First instance's catch handler already set readonly; nothing left to do.
+        }
+        if (cancelled && initialAcquireFinalizedRef.current) {
+          bestEffortReleaseOnce({
+            clientId: state.clientId,
+            leaseToken: state.leaseToken,
+            generation: leaseCredentialsRef.current?.generation ?? 0,
+          });
+        }
+        return;
+      }
+
+      // ----- First mount -----
       try {
         // The lease clientId is the per-browsing-context id from window.name: it
         // survives same-tab reload/navigation and is not inherited by opener-created
@@ -345,32 +378,43 @@ export default function EditorClient({
         // Same-context re-entry proof: the previous page instance's server-issued
         // lease credentials stored under this document + context id.
         const prior = readStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId);
-        const result = await acquireLease(
-          docId,
-          prior ? { clientId, leaseToken, priorLeaseToken: prior.leaseToken, priorGeneration: prior.generation } : { clientId, leaseToken },
-          undefined,
-          adminMode,
-        );
-        if (cancelled) {
-          if (result.state === "acquired") {
-            bestEffortReleaseOnce({ clientId, leaseToken, generation: result.generation });
+
+        // Store shared state BEFORE the async call so replay mounts see it immediately
+        initialAcquireCandidateRef.current = { clientId, leaseToken, prior };
+
+        // Build the shared promise
+        const promise = (async () => {
+          const result = await acquireLease(
+            docId,
+            prior ? { clientId, leaseToken, priorLeaseToken: prior.leaseToken, priorGeneration: prior.generation } : { clientId, leaseToken },
+            undefined,
+            adminMode,
+          );
+          if (cancelled) {
+            if (result.state === "acquired") {
+              bestEffortReleaseOnce({ clientId, leaseToken, generation: result.generation });
+            }
+            return;
           }
-          return;
-        }
-        if (result.state === "acquired") {
-          const creds = { clientId, leaseToken, generation: result.generation };
-          leaseCredentialsRef.current = creds;
-          storeLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId, { leaseToken, generation: result.generation });
-          await finalizeAcquisition(creds);
-        } else if (result.state === "held") {
-          // Held: either another screen owns the lease, or our prior credentials did
-          // not prove same-context re-entry. The conflict modal with the takeover path
-          // is the correct response in both cases.
-          clearStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId, prior ?? undefined);
-          setLeaseHolder(result.holder);
-          setLeaseMode("blocked");
-          setRecoveryReady(true);
-        }
+          initialAcquireFinalizedRef.current = true;
+          if (result.state === "acquired") {
+            const creds = { clientId, leaseToken, generation: result.generation };
+            leaseCredentialsRef.current = creds;
+            storeLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId, { leaseToken, generation: result.generation });
+            await finalizeAcquisition(creds);
+          } else if (result.state === "held") {
+            // Held: either another screen owns the lease, or our prior credentials did
+            // not prove same-context re-entry. The conflict modal with the takeover path
+            // is the correct response in both cases.
+            clearStoredLeaseCredentials(sessionStorage as unknown as Storage, docId, clientId, prior ?? undefined);
+            setLeaseHolder(result.holder);
+            setLeaseMode("blocked");
+            setRecoveryReady(true);
+          }
+        })();
+
+        initialAcquirePromiseRef.current = promise;
+        await promise;
       } catch (err) {
         sceneRef.current = initialScene;
         lastSavedContentRef.current = serializeSceneForComparison(initialScene);
@@ -385,6 +429,8 @@ export default function EditorClient({
     void doAcquire();
     return () => {
       cancelled = true;
+      // Under Strict Mode: first mount's cleanup → cancelled=true, lease not yet acquired → no release.
+      // Under genuine unmount: if we finalized and own the lease, release.
       bestEffortReleaseOnce(leaseCredentialsRef.current);
     };
   }, [docId, hasWritePermission, finalizeAcquisition]);
