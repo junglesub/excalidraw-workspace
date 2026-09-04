@@ -16,6 +16,8 @@ export interface SaveDocumentOptions {
   signal?: AbortSignal;
   fetchFn?: typeof fetch;
   lease: EditLeaseCredentials;
+  leaseScope?: "document" | "deck";
+  deckId?: string;
   adminMode?: boolean;
 }
 
@@ -128,6 +130,8 @@ export interface ResolveClientRecoveryOptions {
   persistedFileIds: Set<string>;
   fetchFn?: typeof fetch;
   lease: EditLeaseCredentials;
+  leaseScope?: "document" | "deck";
+  deckId?: string;
   adminMode?: boolean;
 }
 
@@ -315,9 +319,15 @@ export async function saveDocumentScene(options: SaveDocumentOptions): Promise<S
   const url = new URL(path, base);
   if (options.adminMode) url.searchParams.set("adminMode", "1");
 
+  if (options.leaseScope === "deck" && !options.deckId) {
+    throw new Error("deckId is required for Deck-scoped saves");
+  }
+  const leaseMetadata = options.leaseScope === "deck"
+    ? { leaseScope: "deck" as const, deckId: options.deckId }
+    : {};
   const payload = isManualSave
-    ? { scene: compactScene, lease, ...(thumbnailBase64 ? { thumbnailBase64 } : {}) }
-    : { scene: compactScene, snapshot: snapshotDue, lease, ...(thumbnailBase64 ? { thumbnailBase64 } : {}) };
+    ? { scene: compactScene, lease, ...leaseMetadata, ...(thumbnailBase64 ? { thumbnailBase64 } : {}) }
+    : { scene: compactScene, snapshot: snapshotDue, lease, ...leaseMetadata, ...(thumbnailBase64 ? { thumbnailBase64 } : {}) };
 
   const res = await fetchImpl(url.toString(), {
     method: isManualSave ? "POST" : "PUT",
@@ -366,6 +376,7 @@ export async function resolveClientRecovery(
       clientScene: compactScene,
       clientUpdatedAt: options.draft.updatedAt,
       lease: options.lease,
+      ...(options.leaseScope === "deck" ? { leaseScope: "deck", deckId: options.deckId } : {}),
       ...(clientThumbnailBase64 ? { clientThumbnailBase64 } : {}),
     }),
   });

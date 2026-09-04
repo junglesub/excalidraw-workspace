@@ -109,6 +109,12 @@ function isExpired(row: LeaseRow, now: Date): boolean {
   return exp <= now.getTime();
 }
 
+export function hasActiveEditLease(docId: string, now = new Date()): boolean {
+  const row = getDb().prepare("SELECT * FROM document_edit_leases WHERE document_id = ?").get(docId) as LeaseRow | undefined;
+  if (!row || !row.holder_user_id) return false;
+  return !isExpired(row, now);
+}
+
 function isTakeoverExpired(row: LeaseRow, now: Date): boolean {
   if (!row.takeover_deadline_at) return true;
   const d = Date.parse(row.takeover_deadline_at);

@@ -134,3 +134,46 @@ describe("Recovery conflict API", () => {
     expect(listVersions(doc.id)).toHaveLength(0);
   });
 });
+
+it("resolves a Deck Page recovery conflict under its owning Deck lease", async () => {
+  const owner = createUser("deck-recovery-owner", "pass123", "USER");
+  const session = createSession(owner.id);
+  const { createDeck } = await import("@/lib/decks");
+  const { acquireDeckEditLease } = await import("@/lib/deck_edit_lease");
+  const deck = createDeck(owner.id, "Deck", "16:9");
+  const page = deck.pages[0];
+  const doc = getDocumentRaw(page.documentId)!;
+  const client = { ...emptyScene(), elements: [{ id: "deck-client", type: "ellipse" }] };
+  const lease = acquireDeckEditLease({
+    deckId: deck.id,
+    userId: owner.id,
+    role: "USER",
+    clientId: "deck-context",
+    leaseToken: "deck-token",
+  });
+  if (lease.state !== "acquired") throw new Error("expected Deck lease");
+
+  const response = await postRecoveryRoute(
+    new Request(`http://localhost/api/documents/${page.documentId}/recovery`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        cookie: `${SESSION_COOKIE}=${session.token}`,
+      },
+      body: JSON.stringify({
+        choice: "client",
+        preserveDiscarded: false,
+        expectedServerUpdatedAt: doc.updated_at,
+        clientScene: client,
+        clientUpdatedAt: 123,
+        leaseScope: "deck",
+        deckId: deck.id,
+        lease: { clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation },
+      }),
+    }),
+    { params: Promise.resolve({ id: page.documentId }) },
+  );
+
+  expect(response.status).toBe(200);
+  expect(jsonToScene(getDocumentRaw(page.documentId)!.scene).elements).toEqual(client.elements);
+});

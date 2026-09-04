@@ -9,6 +9,11 @@ export const metadata: Metadata = {
     shortcut: "/favicon.svg",
     apple: "/favicon.svg",
   },
+  appleWebApp: {
+    capable: true,
+    title: "Private Excalidraw",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export default function RootLayout({

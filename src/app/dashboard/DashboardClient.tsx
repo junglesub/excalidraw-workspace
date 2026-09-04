@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, apiForm } from "@/lib/client";
+import type { DeckWithPages } from "@/lib/types";
 import { AdminPanel } from "./AdminPanel";
 
 export interface DocMeta {
@@ -35,6 +36,7 @@ export default function DashBoardClient({ initialUser }: Props) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("mine");
   const [mine, setMine] = useState<DocMeta[]>([]);
+  const [decks, setDecks] = useState<DeckWithPages[]>([]);
   const [shared, setShared] = useState<DocMeta[]>([]);
   const [trash, setTrash] = useState<DocMeta[]>([]);
   const [adminDocs, setAdminDocs] = useState<DocMeta[]>([]);
@@ -89,12 +91,14 @@ export default function DashBoardClient({ initialUser }: Props) {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [mineData, sharedData, trashData] = await Promise.all([
+      const [mineData, sharedData, trashData, deckData] = await Promise.all([
         api<{ documents: DocMeta[] }>("/api/documents"),
         api<{ documents: DocMeta[] }>("/api/documents/shared"),
         api<{ documents: DocMeta[] }>("/api/documents/trash"),
+        api<{ decks: DeckWithPages[] }>("/api/decks"),
       ]);
       setMine(mineData.documents);
+      setDecks(deckData.decks);
       setShared(sharedData.documents);
       setTrash(trashData.documents);
     } catch (err) {
@@ -123,6 +127,19 @@ export default function DashBoardClient({ initialUser }: Props) {
   useEffect(() => {
     if (tab === "admin") loadAdmin();
   }, [tab, loadAdmin]);
+
+  async function createDeck() {
+    setError(null);
+    try {
+      const res = await api<{ deck: DeckWithPages }>("/api/decks", {
+        method: "POST",
+        body: JSON.stringify({ title: "Untitled Deck", aspectRatio: "16:9" }),
+      });
+      router.push(`/decks/${res.deck.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create deck");
+    }
+  }
 
   async function createDoc() {
     setError(null);
@@ -245,6 +262,12 @@ export default function DashBoardClient({ initialUser }: Props) {
               className="border border-gray-300 rounded px-3 py-2 text-sm w-64"
             />
             <button
+              onClick={createDeck}
+              className="bg-indigo-600 text-white rounded px-4 py-2 text-sm hover:bg-indigo-700"
+            >
+              + New Deck
+            </button>
+            <button
               onClick={createDoc}
               className="bg-blue-600 text-white rounded px-4 py-2 text-sm hover:bg-blue-700"
             >
@@ -260,6 +283,20 @@ export default function DashBoardClient({ initialUser }: Props) {
               />
             </label>
           </div>
+          {decks.length > 0 && (
+            <div className="mb-8">
+              <h2 className="text-sm font-semibold text-gray-700 mb-3">Presentation Decks</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {decks.map((deck) => (
+                  <Link key={deck.id} href={`/decks/${deck.id}`} className="bg-white border rounded p-4 hover:shadow transition block">
+                    <div className="font-medium truncate">{deck.title}</div>
+                    <div className="text-xs text-gray-500 mt-1">{deck.aspectRatio} / {deck.pages.length} page{deck.pages.length === 1 ? "" : "s"}</div>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
+          <h2 className="text-sm font-semibold text-gray-700 mb-3">Documents</h2>
           {filteredMine.length === 0 ? (
             <EmptyState message="No documents yet." />
           ) : (

@@ -21,7 +21,7 @@ import {
 } from "@/lib/client_save";
 import { acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, waitForNoSaving, shouldRecoverHandoffToActive, shouldSkipHandoffForRestore, credentialKey, dispatchRelease, getEditorContextId, readStoredLeaseCredentials, storeLeaseCredentials, clearStoredLeaseCredentials, InitialLeaseCoordinator } from "@/lib/client_edit_lease";
 import type { EditorLeaseMode } from "@/lib/client_edit_lease";
-import type { EditLeaseCredentials, ExcalidrawScene, Permission, LeaseHolderSummary } from "@/lib/types";
+import type { DeckAspectRatio, EditLeaseCredentials, ExcalidrawScene, Permission, LeaseHolderSummary } from "@/lib/types";
 import type { LocalDraftEnvelope } from "@/lib/client_save";
 
 interface User {
@@ -55,6 +55,12 @@ interface ShareLinkInfo {
   expires_at: string | null;
 }
 
+export interface EditorClientControl {
+  flush: () => Promise<void>;
+  flushAndRelease: () => Promise<void>;
+  resetView: () => void;
+}
+
 interface Props {
   user: User;
   docId: string;
@@ -64,6 +70,12 @@ interface Props {
   permission: Permission;
   deleted: boolean;
   adminMode?: boolean;
+  embedded?: boolean;
+  onDocumentSaved?: () => void;
+  controlRef?: React.MutableRefObject<EditorClientControl | null>;
+  recordingFrameAspectRatio?: DeckAspectRatio;
+  externalDeckLease?: { deckId: string; credentials: EditLeaseCredentials };
+  embeddedToolbarOrientation?: "horizontal" | "vertical";
 }
 
 interface DraftConflictState {
@@ -101,6 +113,12 @@ export default function EditorClient({
   permission: initialPermission,
   deleted: initialDeleted,
   adminMode: initialAdminMode = false,
+  embedded = false,
+  onDocumentSaved,
+  controlRef,
+  recordingFrameAspectRatio,
+  externalDeckLease,
+  embeddedToolbarOrientation = "horizontal",
 }: Props) {
   const router = useRouter();
   const [currentPermission, setCurrentPermission] = useState<Permission>(initialPermission);
@@ -108,10 +126,11 @@ export default function EditorClient({
 
   const hasWritePermission = currentPermission !== "VIEWER" && !isDeleted;
   const adminMode = initialAdminMode;
+  const usesExternalDeckLease = !!externalDeckLease;
   const withAdminMode = (url: string) => adminMode ? `${url}${url.includes("?") ? "&" : "?"}adminMode=1` : url;
   const hasReleasedRef = useRef<Set<string>>(new Set());
   const bestEffortReleaseOnce = (creds: { clientId: string; leaseToken: string; generation: number } | null) => {
-    if (!creds) return;
+    if (!creds || usesExternalDeckLease) return;
     const key = credentialKey(creds as EditLeaseCredentials);
     const url = withAdminMode(`/api/documents/${encodeURIComponent(docId)}/lease`);
     const payload = JSON.stringify({ action: "release", clientId: creds.clientId, leaseToken: creds.leaseToken, generation: creds.generation });
@@ -119,7 +138,7 @@ export default function EditorClient({
   };
   // lease mode state
   const [leaseMode, setLeaseMode] = useState<"viewer" | "acquiring" | "blocked" | "active" | "handoff" | "readonly" | "lost">(
-    hasWritePermission ? "acquiring" : "viewer"
+    hasWritePermission ? (usesExternalDeckLease ? "active" : "acquiring") : "viewer"
   );
   const [leaseHolder, setLeaseHolder] = useState<LeaseHolderSummary | null>(null);
   const [leaseBusy, setLeaseBusy] = useState(false);
@@ -150,10 +169,12 @@ export default function EditorClient({
   const lastSavedContentRef = useRef<string>(serializeSceneForComparison(initialScene));
   const [initialCanvasScene, setInitialCanvasScene] = useState<ExcalidrawScene>(initialScene);
   const [canvasKey, setCanvasKey] = useState<number>(0);
+  const [recordingFrameResetNonce, setRecordingFrameResetNonce] = useState(0);
   const isDirtyRef = useRef(false);
   const persistedFileIdsRef = useRef<Set<string>>(new Set(Object.keys(initialScene.files || {})));
   const isSavingRef = useRef<boolean>(false);
   const queuedSaveRef = useRef<{ forceSnapshot: boolean } | null>(null);
+  const lastSaveErrorRef = useRef<unknown>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSnapshotRef = useRef<number>(Date.now());
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -310,7 +331,9 @@ export default function EditorClient({
       setLeaseMode("active");
     } catch (err) {
       if (isCurrent && !isCurrent()) return;
-      try { await releaseLease(docId, creds, undefined, adminMode); } catch {}
+      if (!usesExternalDeckLease) {
+        try { await releaseLease(docId, creds, undefined, adminMode); } catch {}
+      }
       leaseCredentialsRef.current = null;
       sceneRef.current = initialScene;
       lastSavedContentRef.current = serializeSceneForComparison(initialScene);
@@ -321,7 +344,7 @@ export default function EditorClient({
       setLeaseMode("readonly");
       setRecoveryReady(true);
     }
-  }, [docId, draftKey, initialScene, setStatus]);
+  }, [docId, draftKey, initialScene, setStatus, usesExternalDeckLease]);
 
   const coordinatorRef = useRef<InitialLeaseCoordinator | null>(null);
   const initialLeaseEpochRef = useRef<number>(0);
@@ -330,9 +353,14 @@ export default function EditorClient({
   useEffect(() => {
     if (!hasWritePermission) {
       setLeaseMode("viewer");
-      // Viewer: never touch localStorage, fetch server scene read-only (already initialScene is server)
       setRecoveryReady(true);
-      // Ensure no draft handling
+      return;
+    }
+    if (externalDeckLease) {
+      leaseCredentialsRef.current = externalDeckLease.credentials;
+      leaseClientIdRef.current = externalDeckLease.credentials.clientId;
+      setLeaseMode("active");
+      void finalizeAcquisition(externalDeckLease.credentials);
       return;
     }
 
@@ -394,7 +422,7 @@ export default function EditorClient({
       initialLeaseEpochRef.current++;
       unsubscribe();
     };
-  }, [docId, hasWritePermission, finalizeAcquisition, adminMode]);
+  }, [docId, hasWritePermission, finalizeAcquisition, adminMode, externalDeckLease]);
 
   const handleOpenReadOnly = useCallback(async () => {
     setLeaseBusy(true);
@@ -497,6 +525,7 @@ export default function EditorClient({
 
   // Heartbeat and graceful handoff with serialization and bounded status checking
   useEffect(() => {
+    if (usesExternalDeckLease) return;
     if (leaseMode !== "active" && leaseMode !== "handoff") return;
     const creds = leaseCredentialsRef.current;
     if (!creds) return;
@@ -565,7 +594,7 @@ export default function EditorClient({
     return () => {
       // Do not clear on handoff; only clear when leaving active/handoff to readonly/lost/blocked
     };
-  }, [leaseMode, docId, draftKey, handleLeaseLost, setStatus]);
+  }, [leaseMode, docId, draftKey, handleLeaseLost, setStatus, usesExternalDeckLease]);
 
   useEffect(() => {
     if (leaseMode !== "active" && leaseMode !== "handoff") {
@@ -625,6 +654,7 @@ export default function EditorClient({
             isManualSave: currentSnapshot,
             snapshotDue: currentSnapshot,
             lease: creds,
+            ...(externalDeckLease ? { leaseScope: "deck" as const, deckId: externalDeckLease.deckId } : {}),
             adminMode,
           });
           lastResult = res;
@@ -662,6 +692,8 @@ export default function EditorClient({
           }
         }
 
+        onDocumentSaved?.();
+
         if (lastResult && forceSnapshot) {
           const manualStatus = getManualSaveStatus(lastResult);
           if (manualStatus === "Already saved" || manualStatus === "Snapshot saved") {
@@ -674,13 +706,14 @@ export default function EditorClient({
         }
       } catch (err) {
         queuedSaveRef.current = null;
+        lastSaveErrorRef.current = err;
         if (await handleLeaseLostForMutation(err)) return;
         setStatus(err instanceof Error ? err.message : "Save failed", "error");
       } finally {
         isSavingRef.current = false;
       }
     },
-    [canEditCanvas, docId, draftKey, loadVersions, setStatus, handleLeaseLostForMutation],
+    [canEditCanvas, docId, draftKey, loadVersions, setStatus, handleLeaseLostForMutation, onDocumentSaved, externalDeckLease],
   );
 
   const saveNow = useCallback(
@@ -744,6 +777,45 @@ export default function EditorClient({
     await executeSave(true);
   }, [canEditCanvas, executeSave]);
 
+  const flushEmbedded = useCallback(async () => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    lastSaveErrorRef.current = null;
+    await executeSave(false);
+    await waitForNoSaving(isSavingRef);
+    if (lastSaveErrorRef.current) throw lastSaveErrorRef.current;
+  }, [executeSave]);
+
+  const flushAndReleaseEmbedded = useCallback(async () => {
+    await flushEmbedded();
+    if (usesExternalDeckLease) return;
+    const creds = leaseCredentialsRef.current;
+    if (!creds) return;
+    await releaseLease(docId, creds, undefined, adminMode);
+    clearStoredLeaseCredentials(
+      sessionStorage as unknown as Storage,
+      docId,
+      leaseClientIdRef.current,
+      { leaseToken: creds.leaseToken, generation: creds.generation },
+    );
+    leaseCredentialsRef.current = null;
+    setLeaseMode("readonly");
+  }, [adminMode, docId, flushEmbedded, usesExternalDeckLease]);
+
+  useEffect(() => {
+    if (!controlRef) return;
+    controlRef.current = {
+      flush: flushEmbedded,
+      flushAndRelease: flushAndReleaseEmbedded,
+      resetView: () => setRecordingFrameResetNonce((value) => value + 1),
+    };
+    return () => {
+      controlRef.current = null;
+    };
+  }, [controlRef, flushEmbedded, flushAndReleaseEmbedded]);
+
   // Intercept Ctrl+S / Cmd+S globally to save immediately to server
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -775,7 +847,11 @@ export default function EditorClient({
         fetch(url, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ scene: compactScene, lease: creds }),
+          body: JSON.stringify({
+            scene: compactScene,
+            lease: creds,
+            ...(externalDeckLease ? { leaseScope: "deck", deckId: externalDeckLease.deckId } : {}),
+          }),
           credentials: "include",
           keepalive: true,
         });
@@ -788,7 +864,7 @@ export default function EditorClient({
     return () => {
       window.removeEventListener("beforeunload", handleBeforeUnload);
     };
-  }, [canEditCanvas, docId]);
+  }, [canEditCanvas, docId, externalDeckLease]);
 
   useEffect(() => {
     const handlePageHide = () => {
@@ -814,6 +890,7 @@ export default function EditorClient({
           draft: draftConflict.draft,
           persistedFileIds: persistedFileIdsRef.current,
           lease: creds,
+          ...(externalDeckLease ? { leaseScope: "deck" as const, deckId: externalDeckLease.deckId } : {}),
           adminMode,
         });
         if (!result.ok) {
@@ -1038,9 +1115,9 @@ export default function EditorClient({
   })();
 
   return (
-    <div className="h-screen flex flex-col bg-gray-50">
+    <div className={`${embedded ? "h-full" : "h-screen"} flex flex-col bg-gray-50`}>
       {/* Top Navigation Bar */}
-      <header className="flex items-center justify-between px-4 py-2.5 bg-white border-b shadow-sm z-10 gap-3">
+      {!embedded && <header className="flex items-center justify-between px-4 py-2.5 bg-white border-b shadow-sm z-10 gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <Link
             href="/dashboard"
@@ -1172,7 +1249,7 @@ export default function EditorClient({
             </button>
           )}
         </div>
-      </header>
+      </header>}
 
       {isReadOnlyBanner && (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between text-sm">
@@ -1216,6 +1293,9 @@ export default function EditorClient({
             readOnly={!canEditCanvas}
             onSceneChange={handleChange}
             theme={theme}
+            recordingFrameAspectRatio={recordingFrameAspectRatio}
+            recordingFrameResetNonce={recordingFrameResetNonce}
+            toolbarOrientation={embedded ? embeddedToolbarOrientation : "horizontal"}
           />
         ) : leaseMode === "blocked" ? null : (
           <div className="w-full h-full flex items-center justify-center text-sm text-gray-500">

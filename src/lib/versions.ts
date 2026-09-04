@@ -10,9 +10,49 @@ import { emptyScene, jsonToScene, sceneToJson } from "./types";
 import { HttpError } from "./http";
 import { serializeForComparison } from "./scene_normalize";
 import type { EditLeaseCredentials } from "./types";
-import { assertActiveEditLease } from "./edit_lease";
+import { assertActiveEditLease, hasActiveEditLease } from "./edit_lease";
+import { assertActiveDeckEditLease } from "./deck_edit_lease";
 
 export type { VersionOrigin };
+
+export type SaveLeaseAuthorization =
+  | EditLeaseCredentials
+  | { scope: "document"; credentials: EditLeaseCredentials }
+  | { scope: "deck"; deckId: string; credentials: EditLeaseCredentials };
+
+export function assertSaveLeaseAuthorization(
+  docId: string,
+  actorId: string,
+  role: "USER" | "ADMIN",
+  adminMode: boolean,
+  authorization: SaveLeaseAuthorization,
+): void {
+  if ("scope" in authorization) {
+    if (authorization.scope === "deck") {
+      const row = getDb().prepare("SELECT 1 FROM deck_pages WHERE deck_id = ? AND document_id = ?").get(authorization.deckId, docId);
+      if (!row) throw new HttpError(403, "Document does not belong to this Deck");
+      assertActiveDeckEditLease({
+        deckId: authorization.deckId,
+        userId: actorId,
+        role,
+        clientId: authorization.credentials.clientId,
+        leaseToken: authorization.credentials.leaseToken,
+        generation: authorization.credentials.generation,
+      });
+      return;
+    }
+    authorization = authorization.credentials;
+  }
+  assertActiveEditLease({
+    docId,
+    userId: actorId,
+    role,
+    adminMode,
+    clientId: authorization.clientId,
+    leaseToken: authorization.leaseToken,
+    generation: authorization.generation,
+  });
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -29,7 +69,7 @@ function insertSnapshot(
   createdBy: string,
   makeThumbnail: boolean,
   thumbnailBuffer?: Buffer | null,
-  options?: { allowInlineDataUrl?: boolean; origin?: VersionOrigin | null },
+  options?: { allowInlineDataUrl?: boolean; origin?: VersionOrigin | null; pinned?: boolean },
 ): DocumentVersionRow {
   const db = getDb();
   const maxRow = db
@@ -40,6 +80,7 @@ function insertSnapshot(
   const created = nowIso();
   const compactScene = compactSceneFiles(docId, scene, { allowInlineDataUrl: options?.allowInlineDataUrl ?? false });
   const origin = options?.origin ?? null;
+  const isPinned = options?.pinned ? 1 : 0;
 
   let thumbnailPath: string | null = null;
   if (makeThumbnail) {
@@ -70,16 +111,16 @@ function insertSnapshot(
   }
 
   db.prepare(
-    `INSERT INTO document_versions (id, document_id, version_number, scene, thumbnail_path, created_by, created_at, origin)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, docId, versionNumber, sceneToJson(compactScene), thumbnailPath, createdBy, created, origin);
+    `INSERT INTO document_versions (id, document_id, version_number, scene, thumbnail_path, created_by, created_at, origin, is_pinned)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, docId, versionNumber, sceneToJson(compactScene), thumbnailPath, createdBy, created, origin, isPinned);
 
   // Trim to the newest MAX_VERSIONS and GC physical thumbnail files.
   const trimmed = db
     .prepare(
       `SELECT thumbnail_path FROM document_versions
-       WHERE document_id = ? AND id NOT IN (
-          SELECT id FROM document_versions WHERE document_id = ?
+       WHERE document_id = ? AND is_pinned = 0 AND id NOT IN (
+          SELECT id FROM document_versions WHERE document_id = ? AND is_pinned = 0
           ORDER BY created_at DESC, version_number DESC LIMIT ?
        )`,
     )
@@ -93,8 +134,8 @@ function insertSnapshot(
 
   db.prepare(
     `DELETE FROM document_versions
-     WHERE document_id = ? AND id NOT IN (
-        SELECT id FROM document_versions WHERE document_id = ?
+     WHERE document_id = ? AND is_pinned = 0 AND id NOT IN (
+        SELECT id FROM document_versions WHERE document_id = ? AND is_pinned = 0
         ORDER BY created_at DESC, version_number DESC LIMIT ?
      )`,
   ).run(docId, docId, MAX_VERSIONS);
@@ -113,7 +154,7 @@ export function createSnapshotFromDoc(
   createdBy: string,
   makeThumbnail = true,
   thumbnailBuffer?: Buffer | null,
-  options?: { allowInlineDataUrl?: boolean; origin?: VersionOrigin | null },
+  options?: { allowInlineDataUrl?: boolean; origin?: VersionOrigin | null; pinned?: boolean },
 ): DocumentVersionRow {
   const doc = getDocumentRaw(docId);
   if (!doc) throw new HttpError(404, "Document not found");
@@ -126,9 +167,18 @@ export function createSnapshotFromScene(
   createdBy: string,
   makeThumbnail = true,
   thumbnailBuffer?: Buffer | null,
-  options?: { allowInlineDataUrl?: boolean; origin?: VersionOrigin | null },
+  options?: { allowInlineDataUrl?: boolean; origin?: VersionOrigin | null; pinned?: boolean },
 ): DocumentVersionRow {
   return insertSnapshot(docId, scene, createdBy, makeThumbnail, thumbnailBuffer, options);
+}
+
+export function createPinnedSnapshotFromDoc(
+  docId: string,
+  createdBy: string,
+  origin: Extract<VersionOrigin, "named_snapshot" | "recording_baseline">,
+  makeThumbnail = true,
+): DocumentVersionRow {
+  return createSnapshotFromDoc(docId, createdBy, makeThumbnail, null, { origin, pinned: true });
 }
 
 export function getVersion(id: string): DocumentVersionRow | undefined {
@@ -140,7 +190,7 @@ export function getVersion(id: string): DocumentVersionRow | undefined {
 export function listVersions(docId: string): Omit<DocumentVersionRow, "scene">[] {
   const rows = getDb()
     .prepare(
-      `SELECT v.id, v.document_id, v.version_number, v.thumbnail_path, v.created_by, v.created_at, v.origin,
+      `SELECT v.id, v.document_id, v.version_number, v.thumbnail_path, v.created_by, v.created_at, v.origin, v.is_pinned,
               u.username AS created_by_username
        FROM document_versions v JOIN users u ON u.id = v.created_by
        WHERE v.document_id = ? ORDER BY v.version_number DESC`,
@@ -173,11 +223,11 @@ export function handleAutoSave(
   scene: ExcalidrawScene,
   thumbnailBuffer: Buffer | null,
   snapshotRequested: boolean,
-  lease: EditLeaseCredentials,
+  lease: SaveLeaseAuthorization,
 ): { snapshotCreated: boolean; updatedAt: string } {
   return transaction(() => {
     requireWrite(docId, actorId, role, adminMode);
-    assertActiveEditLease({ docId, userId: actorId, role, adminMode, clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation });
+    assertSaveLeaseAuthorization(docId, actorId, role, adminMode, lease);
     const compactScene = compactSceneFiles(docId, scene, { allowInlineDataUrl: false });
     let thumbPath: string | null = null;
     try {
@@ -209,11 +259,11 @@ export function handleManualSave(
   adminMode: boolean,
   scene: ExcalidrawScene,
   thumbnailBuffer: Buffer | null,
-  lease: EditLeaseCredentials,
+  lease: SaveLeaseAuthorization,
 ): { alreadySaved: boolean; snapshotCreated: boolean; snapshot?: DocumentVersionRow; versions: Omit<DocumentVersionRow, "scene">[] } {
   return transaction(() => {
     requireWrite(docId, actorId, role, adminMode);
-    assertActiveEditLease({ docId, userId: actorId, role, adminMode, clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation });
+    assertSaveLeaseAuthorization(docId, actorId, role, adminMode, lease);
     const current = getDocumentRaw(docId);
     if (!current) throw new HttpError(404, "Document not found");
 
@@ -292,11 +342,11 @@ export function resolveRecoveryConflict(
   role: "USER" | "ADMIN",
   adminMode: boolean,
   input: ResolveRecoveryConflictInput,
-  lease: EditLeaseCredentials,
+  lease: SaveLeaseAuthorization,
 ): ResolveRecoveryConflictResult {
   return transaction(() => {
     requireWrite(docId, actorId, role, adminMode);
-    assertActiveEditLease({ docId, userId: actorId, role, adminMode, clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation });
+    assertSaveLeaseAuthorization(docId, actorId, role, adminMode, lease);
     const current = getDocumentRaw(docId);
     if (!current) throw new HttpError(404, "Document not found");
     const serverScene = jsonToScene(current.scene);
@@ -342,17 +392,17 @@ export function resolveRecoveryConflict(
  * state with origin "restore", then applies the selected history version
  * as the document current scene.
  */
-export function restoreVersion(
+function restoreVersionInternal(
   docId: string,
   versionId: string,
   actorId: string,
   role: "USER" | "ADMIN",
   adminMode: boolean,
-  lease: EditLeaseCredentials,
+  assertLeaseSafety: () => void,
 ): DocumentVersionRow {
   return transaction(() => {
     requireWrite(docId, actorId, role, adminMode);
-    assertActiveEditLease({ docId, userId: actorId, role, adminMode, clientId: lease.clientId, leaseToken: lease.leaseToken, generation: lease.generation });
+    assertLeaseSafety();
     const version = getVersion(versionId);
     if (!version || version.document_id !== docId) {
       throw new HttpError(404, "Version not found");
@@ -365,25 +415,16 @@ export function restoreVersion(
     if (preDoc.thumbnail_path) {
       const preThumbAbs = path.resolve(cfg.dataDir, preDoc.thumbnail_path);
       if (existsSync(preThumbAbs)) {
-        try {
-          preThumbBuf = readFileSync(preThumbAbs);
-        } catch {
-          // ignore
-        }
+        try { preThumbBuf = readFileSync(preThumbAbs); } catch {}
       }
     } else {
       const fallbackAbs = path.resolve(cfg.dataDir, `thumbnails/${docId}.png`);
       if (existsSync(fallbackAbs)) {
-        try {
-          preThumbBuf = readFileSync(fallbackAbs);
-        } catch {
-          // ignore
-        }
+        try { preThumbBuf = readFileSync(fallbackAbs); } catch {}
       }
     }
 
     const newSnapshot = insertSnapshot(docId, preScene, actorId, true, preThumbBuf, { origin: "restore" });
-
     const scene = jsonToScene(version.scene);
     const compact = compactSceneFiles(docId, scene);
     getDb()
@@ -394,32 +435,54 @@ export function restoreVersion(
     if (version.thumbnail_path) {
       const versionThumbAbs = path.resolve(cfg.dataDir, version.thumbnail_path);
       if (existsSync(versionThumbAbs)) {
-        try {
-          versionThumbBuf = readFileSync(versionThumbAbs);
-        } catch {
-          // ignore
-        }
+        try { versionThumbBuf = readFileSync(versionThumbAbs); } catch {}
       }
     }
 
     if (versionThumbBuf) {
       const docThumb = saveThumbnailFromBuffer(docId, versionThumbBuf);
-      getDb()
-        .prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?")
-        .run(docThumb.relativePath, docId);
+      getDb().prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?").run(docThumb.relativePath, docId);
     } else {
       const doc = getDocumentRaw(docId);
       const docThumbPath = `thumbnails/${docId}.png`;
       const docThumbAbs = path.resolve(cfg.dataDir, docThumbPath);
       if (!doc?.thumbnail_path || (!existsSync(path.resolve(cfg.dataDir, doc.thumbnail_path)) && existsSync(docThumbAbs))) {
-        getDb()
-          .prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?")
-          .run(docThumbPath, docId);
+        getDb().prepare("UPDATE documents SET thumbnail_path = ? WHERE id = ?").run(docThumbPath, docId);
       }
     }
 
     gcUnreferencedAttachments(docId);
     return newSnapshot;
+  });
+}
+
+export function restoreVersion(
+  docId: string,
+  versionId: string,
+  actorId: string,
+  role: "USER" | "ADMIN",
+  adminMode: boolean,
+  lease: EditLeaseCredentials,
+): DocumentVersionRow {
+  return restoreVersionInternal(docId, versionId, actorId, role, adminMode, () => {
+    assertActiveEditLease({
+      docId, userId: actorId, role, adminMode, clientId: lease.clientId,
+      leaseToken: lease.leaseToken, generation: lease.generation,
+    });
+  });
+}
+
+export function restoreVersionWithoutLease(
+  docId: string,
+  versionId: string,
+  actorId: string,
+  role: "USER" | "ADMIN",
+  adminMode = false,
+): DocumentVersionRow {
+  return restoreVersionInternal(docId, versionId, actorId, role, adminMode, () => {
+    if (hasActiveEditLease(docId)) {
+      throw new HttpError(409, "Cannot restore while document has an active edit lease");
+    }
   });
 }
 

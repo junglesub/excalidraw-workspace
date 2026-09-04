@@ -23,6 +23,7 @@ export interface UserRow {
   is_active: number;
   created_at: string;
   updated_at: string;
+  presentation_laser_settings: string;
 }
 
 export interface PublicUser {
@@ -40,6 +41,49 @@ export interface SessionRow {
   token: string;
   expires_at: string;
   created_at: string;
+}
+
+
+export type DeckAspectRatio = "16:9" | "9:16";
+
+export interface DeckRow {
+  id: string;
+  title: string;
+  owner_id: string;
+  aspect_ratio: DeckAspectRatio;
+  active_recording_baseline_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeckPageRow {
+  id: string;
+  deck_id: string;
+  document_id: string;
+  title: string;
+  page_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DeckPage {
+  id: string;
+  deckId: string;
+  documentId: string;
+  title: string;
+  order: number;
+  thumbnailPath: string | null;
+}
+
+export interface DeckWithPages {
+  id: string;
+  title: string;
+  ownerId: string;
+  aspectRatio: DeckAspectRatio;
+  activeRecordingBaselineId?: string;
+  createdAt: string;
+  updatedAt: string;
+  pages: DeckPage[];
 }
 
 export interface DocumentRow {
@@ -79,7 +123,9 @@ export type VersionOrigin =
   | "auto_snapshot"
   | "restore"
   | "recovery_client_draft"
-  | "recovery_server_version";
+  | "recovery_server_version"
+  | "named_snapshot"
+  | "recording_baseline";
 
 export interface DocumentVersionRow {
   id: string;
@@ -90,6 +136,7 @@ export interface DocumentVersionRow {
   created_by: string; // user id
   created_at: string;
   origin: VersionOrigin | null;
+  is_pinned: number;
 }
 
 export interface AttachmentRow {

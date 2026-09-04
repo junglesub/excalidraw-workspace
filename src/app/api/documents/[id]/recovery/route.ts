@@ -35,6 +35,14 @@ export async function POST(req: Request, { params }: Ctx) {
     if (!leaseCreds) {
       return jsonError("lease credentials are required", 400);
     }
+    const leaseAuthorization = body.leaseScope === "deck"
+      ? (typeof body.deckId === "string" && body.deckId.trim()
+        ? { scope: "deck" as const, deckId: body.deckId, credentials: leaseCreds }
+        : null)
+      : leaseCreds;
+    if (!leaseAuthorization) {
+      return jsonError("deckId is required for Deck-scoped recovery", 400);
+    }
     const result = resolveRecoveryConflict(
       id,
       user.id,
@@ -47,7 +55,7 @@ export async function POST(req: Request, { params }: Ctx) {
         clientScene: body.clientScene as ExcalidrawScene,
         thumbnailBuffer: decodePngDataURL(body.clientThumbnailBase64),
       },
-      leaseCreds,
+      leaseAuthorization,
     );
     return json(result, result.ok ? 200 : 409);
   } catch (error) {

@@ -141,7 +141,11 @@ function toMeta(
 export function listMyDocuments(userId: string): DocumentMeta[] {
   const rows = getDb()
     .prepare(
-      "SELECT * FROM documents WHERE owner_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC",
+      `SELECT d.* FROM documents d
+       WHERE d.owner_id = ?
+         AND d.deleted_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM deck_pages p WHERE p.document_id = d.id)
+       ORDER BY d.updated_at DESC`,
     )
     .all(userId) as DocumentRow[];
   return rows.map((d) => toMeta(d, userId, "USER", false));
@@ -153,6 +157,7 @@ export function listSharedDocuments(userId: string): DocumentMeta[] {
       `SELECT d.* FROM documents d
        JOIN document_members m ON m.document_id = d.id
        WHERE m.user_id = ? AND d.owner_id <> ? AND d.deleted_at IS NULL
+         AND NOT EXISTS (SELECT 1 FROM deck_pages p WHERE p.document_id = d.id)
        ORDER BY d.updated_at DESC`,
     )
     .all(userId, userId) as DocumentRow[];

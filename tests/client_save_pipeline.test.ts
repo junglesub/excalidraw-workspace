@@ -511,3 +511,32 @@ describe("Client Save Pipeline", () => {
     expect(getManualSaveStatus({ ok: true, alreadySaved: false, snapshotCreated: false })).toBe("Saved");
   });
 });
+
+describe("Deck-scoped client save payload", () => {
+  it("sends deck lease scope and deckId with Page saves", async () => {
+    let payload: Record<string, unknown> | null = null;
+    const fetchFn = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/scene")) {
+        payload = JSON.parse(String(init?.body || "{}"));
+        return new Response(JSON.stringify({ ok: true, snapshotCreated: false, updatedAt: "now" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await saveDocumentScene({
+      docId: "page-doc",
+      scene: emptyScene(),
+      persistedFileIds: new Set(),
+      lease: { clientId: "deck-tab", leaseToken: "deck-token", generation: 4 },
+      leaseScope: "deck",
+      deckId: "deck-123",
+      fetchFn,
+    } as never);
+
+    expect(payload).toMatchObject({
+      leaseScope: "deck",
+      deckId: "deck-123",
+      lease: { clientId: "deck-tab", leaseToken: "deck-token", generation: 4 },
+    });
+  });
+});

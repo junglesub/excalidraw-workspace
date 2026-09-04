@@ -29,7 +29,15 @@ export async function POST(req: Request, { params }: Ctx) {
     if (!leaseCreds) {
       return jsonError("lease credentials are required", 400);
     }
-    const result = handleManualSave(id, user.id, user.role, adminMode, scene, thumbBuf, leaseCreds);
+    const leaseAuthorization = body.leaseScope === "deck"
+      ? (typeof body.deckId === "string" && body.deckId.trim()
+        ? { scope: "deck" as const, deckId: body.deckId, credentials: leaseCreds }
+        : null)
+      : leaseCreds;
+    if (!leaseAuthorization) {
+      return jsonError("deckId is required for Deck-scoped saves", 400);
+    }
+    const result = handleManualSave(id, user.id, user.role, adminMode, scene, thumbBuf, leaseAuthorization);
     return json({
       ok: true,
       alreadySaved: result.alreadySaved,

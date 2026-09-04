@@ -23,11 +23,21 @@ import { permanentDelete } from "@/lib/trash";
 import { GET as getDocumentRoute } from "@/app/api/documents/[id]/route";
 import { SESSION_COOKIE } from "@/lib/http";
 import { emptyScene, type ExcalidrawScene } from "@/lib/types";
+import { createDeck } from "@/lib/decks";
 
 describe("Documents and Permissions", () => {
   beforeEach(() => {
     resetConfig();
     resetDb();
+  });
+
+  it("hides deck page backing documents from standalone owner listings", () => {
+    const owner = createUser("deck-doc-owner", "pass123", "USER");
+    const standalone = createDocument(owner.id, emptyScene(), "Standalone");
+    const deck = createDeck(owner.id, "Deck", "16:9");
+
+    expect(listMyDocuments(owner.id).map((doc) => doc.id)).toEqual([standalone.id]);
+    expect(listMyDocuments(owner.id).map((doc) => doc.id)).not.toContain(deck.pages[0].documentId);
   });
 
   it("should create document and list under owner", () => {

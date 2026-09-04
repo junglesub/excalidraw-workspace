@@ -31,8 +31,16 @@ export async function PUT(req: Request, { params }: Ctx) {
     if (!leaseCreds) {
       return jsonError("lease credentials are required", 400);
     }
+    const leaseAuthorization = body.leaseScope === "deck"
+      ? (typeof body.deckId === "string" && body.deckId.trim()
+        ? { scope: "deck" as const, deckId: body.deckId, credentials: leaseCreds }
+        : null)
+      : leaseCreds;
+    if (!leaseAuthorization) {
+      return jsonError("deckId is required for Deck-scoped saves", 400);
+    }
     const wantSnapshot = body.snapshot === true;
-    const result = handleAutoSave(id, user.id, user.role, adminMode, scene, thumbBuf, wantSnapshot, leaseCreds);
+    const result = handleAutoSave(id, user.id, user.role, adminMode, scene, thumbBuf, wantSnapshot, leaseAuthorization);
     return json({ ok: true, snapshotCreated: result.snapshotCreated, updatedAt: result.updatedAt });
   } catch (err) {
     return handleError(err);
