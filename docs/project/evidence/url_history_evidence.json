@@ -1,0 +1,170 @@
+{
+  "timestamp": "2026-10-21T08:02:53.225Z",
+  "environment": {
+    "node": "v24.15.0",
+    "browser": "Chrome/155 Headless",
+    "ports": {
+      "testPort": 3123,
+      "cdpPort": 9322
+    }
+  },
+  "verificationSummary": {
+    "status": "VERIFIED_SOUND",
+    "assertionsPassed": 79,
+    "assertionsFailed": 0,
+    "visualPixelCheck": {
+      "urlBlack": {
+        "id": "url-black",
+        "blueGlyphs": 1511,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 870
+      },
+      "urlRed": {
+        "id": "url-red",
+        "blueGlyphs": 1363,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 849
+      },
+      "urlHidden": {
+        "id": "url-hidden",
+        "blueGlyphs": 0,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 0
+      },
+      "urlSemi": {
+        "id": "url-semi",
+        "blueGlyphs": 1203,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 808
+      },
+      "urlUnderRect": {
+        "id": "url-under-rect",
+        "blueGlyphs": 0,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 0
+      },
+      "urlAboveRect": {
+        "id": "url-above-rect",
+        "blueGlyphs": 1323,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 825
+      },
+      "urlUnderImg": {
+        "id": "url-under-img",
+        "blueGlyphs": 0,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 0
+      },
+      "urlElCorner": {
+        "id": "url-ellipse-corner",
+        "blueGlyphs": 270,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 179
+      },
+      "urlElCenter": {
+        "id": "url-ellipse-center",
+        "blueGlyphs": 0,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 0
+      },
+      "urlDiaCorner": {
+        "id": "url-diamond-corner",
+        "blueGlyphs": 270,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 179
+      },
+      "urlDiaCenter": {
+        "id": "url-diamond-center",
+        "blueGlyphs": 0,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 0
+      },
+      "urlTranslucent": {
+        "id": "url-under-translucent",
+        "blueGlyphs": 1522,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 875
+      },
+      "urlHachure": {
+        "id": "url-under-hachure",
+        "blueGlyphs": 1525,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 874
+      },
+      "urlRotCovered": {
+        "id": "url-rot-covered",
+        "blueGlyphs": 0,
+        "darkGlyphs": 0,
+        "redGlyphs": 0,
+        "blueUnderline": 0
+      },
+      "urlSat": {
+        "id": "url-sat",
+        "blueGlyphs": 1100,
+        "darkGlyphs": 20,
+        "redGlyphs": 0,
+        "blueUnderline": 668
+      }
+    },
+    "opacityCheck": {
+      "opacityZeroEmitsNoOverlay": true,
+      "opacityZeroCannotOpen": true,
+      "opacityFiftyRespected": true
+    },
+    "occlusionCheck": {
+      "urlBelowOpaqueRectHidden": true,
+      "urlBelowImageHidden": true,
+      "urlAboveOpaqueRectVisible": true,
+      "ellipseCornerVisible": true,
+      "ellipseCenterOccluded": true,
+      "diamondCornerVisible": true,
+      "diamondCenterOccluded": true,
+      "translucentShapePassesThrough": true,
+      "patternedShapePassesThrough": true,
+      "rotatedUrlCoveredByRectHidden": true,
+      "satOverlapDetectedAndCutout": true,
+      "ctrlClickBlockedByCoveringContent": true,
+      "ctrlClickAllowedOnTopmostUrl": true
+    },
+    "persistenceCheck": {
+      "persistedBlackStrokeColor": "#1e1e1e",
+      "persistedRedStrokeColor": "#e03131",
+      "cleanStoredCustomData": true
+    },
+    "historyCheck": {
+      "initialColor": "#1e1e1e",
+      "userColorRed": "#e03131",
+      "userColorBlue": "#4dabf7",
+      "undo1ToBlue": "#4dabf7",
+      "serverPersistedAfterUndo": "#4dabf7",
+      "undo2ToRed": "#e03131",
+      "undo3ToInitial": "#1e1e1e",
+      "redo1ToRed": "#e03131",
+      "redo2ToBlue": "#4dabf7"
+    },
+    "transitionsCheck": {
+      "urlToOrdinaryRemovesOverlay": true,
+      "ordinaryToUrlRestoresOverlay": true
+    },
+    "transformsCheck": {
+      "zoomAndScrollSynced": true,
+      "elementRotationSynced": true
+    },
+    "productionIsolationCheck": {
+      "globalsExposedWithoutE2E": false
+    }
+  }
+}

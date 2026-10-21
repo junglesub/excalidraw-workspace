@@ -9,6 +9,12 @@ It provides full document management, version history snapshots, user access con
 ## ✨ Features
 
 - 🎨 **Full Excalidraw Integration** (`@excalidraw/excalidraw` 0.18.1): Drawing, shapes, text, handwriting, light/dark themes, canvas zoom/pan, and flowchart nodes via `Ctrl`/`Cmd`+arrow. Tab-to-cycle node type is not in this package version.
+- 🔵 **URL Text on the Canvas**: Standalone text elements whose entire trimmed text is a web URL (`http://`, `https://`, or `www.` normalized to `https://`) display both the **text glyphs and an underline in slightly light blue (`#4dabf7`)**. `Ctrl`+click (`Cmd`+click on macOS) opens the link in a new tab; regular clicks and other tools do not navigate. The light-blue text glyphs and underline are rendered via an aligned, pointer-transparent DOM/SVG overlay that tracks zoom, pan, and rotation transforms while leaving underlying stored scene element colors untouched (`#1e1e1e` default, imported colors, or user color edits). Element opacity (0–100) and scene stacking order (Z-index) are fully respected:
+  - **Actual Shape Silhouettes**: Ellipses and diamonds use true convex silhouettes rather than rectangular bounding boxes. A URL lying in the empty corner of an ellipse or diamond bounding box remains visible (blue) and clickable; only the filled center occludes and blocks navigation.
+  - **Translucency & Patterned Fills**: Only fully opaque shapes (`opacity: 100`, `fillStyle: "solid"`, and opaque background color) solidly cover. Translucent elements (`opacity < 100`), non-solid fills (`hachure`, `cross-hatch`), and semi-transparent colors (`rgba` with alpha < 0.99) pass through without removing the blue overlay or blocking navigation.
+  - **Rotated Coordinates & SAT Overlap**: Oriented bounding boxes are tested for overlap using the Separating Axis Theorem (SAT) so rotated intersections are accurately detected. For rotated URLs, covering geometry is converted into the URL's local coordinate space ($cx_{local}, cy_{local}, \theta_{cover} - \theta_{url}$) and rendered via SVG mask cutouts (`<ellipse>`, `<polygon>`, `<rect>`).
+  - **Preserves Native Excalidraw Engine**: Native history, delta tracking, undo/redo, and server save fidelity are completely preserved without substituting stored document colors.
+  - **Known limits**: Standalone URLs only (container labels and multi-line URLs are excluded); PNG/SVG disk exports and server thumbnails render the stored document stroke color; 100% opacity images are treated as bounding-box covers as per-pixel bitmap alpha is not synchronously evaluated during vector scene layout.
 - 🔒 **Single-Editor Lease (One Canvas Editor Per Document)**:
   - Exactly one active canvas editor per document across users, browsers, devices, and tabs.
   - Lease acquisition before editable canvas mount; blocking conflict modal offers `Open read-only` and `Take over editing`.
@@ -141,7 +147,7 @@ npm run build
 
 Detailed implementation guides and verification checklists are available in the [`docs/`](docs/) directory:
 - [Implementation Plan](docs/project/implement_plan.md)
-- [Verification Checklist](docs/project/CHECKLIST.md)
+- [Verification Checklist](docs/project/CHECKLIST.md) (see section 19 for canvas URL text)
 - [Attachment Transfer Status](docs/features/attachment-transfer/status.md)
 - [Attachment Transfer Design](docs/features/attachment-transfer/design.md)
 - [Future Roadmap & Follow-up](docs/project/TODO_FOLLOWUP.md)
