@@ -13,11 +13,37 @@ import {
 import { GET as getThumbnailRoute } from "@/app/api/thumbnails/[...path]/route";
 import { SESSION_COOKIE } from "@/lib/http";
 import { emptyScene } from "@/lib/types";
+import { createDocument, addMember, removeMember } from "@/lib/documents";
+import { createSnapshotFromDoc } from "@/lib/versions";
 
 describe("Thumbnail Rendering and Storage", () => {
   beforeEach(() => {
     resetConfig();
     resetDb();
+  });
+
+  it("enforces document access for current and version thumbnails, including revoked membership", async () => {
+    const owner = createUser("thumbnail-owner", "pass123", "USER");
+    const other = createUser("thumbnail-other", "pass123", "USER");
+    const doc = createDocument(owner.id, emptyScene());
+    const version = createSnapshotFromDoc(doc.id, owner.id);
+    const ownerToken = createSession(owner.id).token;
+    const otherToken = createSession(other.id).token;
+    for (const thumbnail of [doc.thumbnail_path!, version.thumbnail_path!]) {
+      const filename = thumbnail.replace(/^thumbnails[\\/]/, "");
+      const get = (token?: string) => getThumbnailRoute(new Request(`http://localhost/api/thumbnails/${filename}`, {
+        headers: token ? { cookie: `${SESSION_COOKIE}=${token}` } : {},
+      }), { params: Promise.resolve({ path: [filename] }) });
+      expect((await get()).status).toBe(401);
+      const allowed = await get(ownerToken);
+      expect(allowed.status).toBe(200);
+      expect(allowed.headers.get("Cache-Control")).toBe("private, no-store");
+      expect((await get(otherToken)).status).toBe(403);
+      addMember(doc.id, other.id, "VIEWER");
+      expect((await get(otherToken)).status).toBe(200);
+      removeMember(doc.id, other.id);
+      expect((await get(otherToken)).status).toBe(403);
+    }
   });
 
   it("should render a valid PNG buffer with PNG signature", () => {

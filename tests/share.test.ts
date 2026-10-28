@@ -5,7 +5,6 @@ import { createUser, createSession } from "@/lib/users";
 import { createDocument, addMember, removeMember, listMembers, resolvePermission } from "@/lib/documents";
 import {
   createOrReplaceShareLink,
-  getShareLinkByDocument,
   getActiveShareLink,
   getValidShareLinkByToken,
   requireValidShareToken,

@@ -6,7 +6,7 @@ import { createDeck, createBlankPage, deletePage, getDeck } from "@/lib/decks";
 import { getDocumentWithScene, updateScene } from "@/lib/documents";
 import { emptyScene, type ExcalidrawScene } from "@/lib/types";
 import { getVersion } from "@/lib/versions";
-import { acquireEditLease } from "@/lib/edit_lease";
+import { acquireDeckEditLease, releaseDeckEditLease } from "@/lib/deck_edit_lease";
 import {
   createNamedSnapshot,
   deleteNamedSnapshot,
@@ -19,6 +19,12 @@ import {
 
 function sceneWith(id: string): ExcalidrawScene {
   return { ...emptyScene(), elements: [{ id, type: "rectangle", isDeleted: false }] };
+}
+
+function deckLeaseFor(deckId: string, userId: string) {
+  const lease = acquireDeckEditLease({ deckId, userId, role: "USER", clientId: "baseline-tab", leaseToken: "baseline-token" });
+  if (lease.state !== "acquired") throw new Error("expected Deck lease");
+  return lease;
 }
 
 function sceneIds(documentId: string, userId: string): string[] {
@@ -77,7 +83,7 @@ describe("presentation snapshots and recording baselines", () => {
     const later = createBlankPage(deck.id, user.id, "USER");
     updateScene(later.documentId, sceneWith("later-page"), user.id, "USER");
 
-    const result = resetRecordingBaseline(deck.id, { scope: "all" }, user.id, "USER");
+    const result = resetRecordingBaseline(deck.id, { scope: "all" }, user.id, "USER", deckLeaseFor(deck.id, user.id));
 
     expect(result.restoredPageIds).toHaveLength(2);
     expect(result.skippedPageIds).toEqual([]);
@@ -98,7 +104,7 @@ describe("presentation snapshots and recording baselines", () => {
     updateScene(first.documentId, sceneWith("one-edit"), user.id, "USER");
     updateScene(second.documentId, sceneWith("two-edit"), user.id, "USER");
 
-    resetRecordingBaseline(deck.id, { scope: "current", pageId: first.id }, user.id, "USER");
+    resetRecordingBaseline(deck.id, { scope: "current", pageId: first.id }, user.id, "USER", deckLeaseFor(deck.id, user.id));
 
     expect(sceneIds(first.documentId, user.id)).toEqual(["one"]);
     expect(sceneIds(second.documentId, user.id)).toEqual(["two-edit"]);
@@ -111,30 +117,22 @@ describe("presentation snapshots and recording baselines", () => {
     setRecordingBaseline(deck.id, user.id, "USER");
     deletePage(deck.id, second.id, user.id, "USER");
 
-    const result = resetRecordingBaseline(deck.id, { scope: "all" }, user.id, "USER");
+    const result = resetRecordingBaseline(deck.id, { scope: "all" }, user.id, "USER", deckLeaseFor(deck.id, user.id));
 
     expect(result.skippedPageIds).toEqual([second.id]);
     expect(getDeck(deck.id, user.id, "USER").pages).toHaveLength(1);
   });
 
-  it("rejects reset before changing any page when a target document has an active edit lease", () => {
+  it("rejects reset before changing any page when its Deck lease has been released", () => {
     const user = createUser("lease-owner", "pass123", "USER");
     const deck = createDeck(user.id, "Deck", "16:9");
     const page = deck.pages[0];
     updateScene(page.documentId, sceneWith("baseline"), user.id, "USER");
     setRecordingBaseline(deck.id, user.id, "USER");
     updateScene(page.documentId, sceneWith("edited"), user.id, "USER");
-    const lease = acquireEditLease({
-      docId: page.documentId,
-      userId: user.id,
-      role: "USER",
-      adminMode: false,
-      clientId: "editor-client",
-      leaseToken: "lease-token",
-    });
-    expect(lease.state).toBe("acquired");
-
-    expect(() => resetRecordingBaseline(deck.id, { scope: "all" }, user.id, "USER")).toThrow(/active edit lease/i);
+    const lease = deckLeaseFor(deck.id, user.id);
+    releaseDeckEditLease({ ...lease, userId: user.id, role: "USER" });
+    expect(() => resetRecordingBaseline(deck.id, { scope: "all" }, user.id, "USER", lease)).toThrow(/lease was lost/i);
     expect(sceneIds(page.documentId, user.id)).toEqual(["edited"]);
   });
 });

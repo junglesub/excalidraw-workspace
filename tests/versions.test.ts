@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { getDb, resetDb } from "@/lib/db";
-import { resetConfig } from "@/lib/config";
+import { getDb, resetDb, transaction } from "@/lib/db";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { config, resetConfig } from "@/lib/config";
 import { createUser } from "@/lib/users";
 import { acquireEditLease } from "@/lib/edit_lease";
 import { createDocument, getDocumentRaw, MAX_VERSIONS } from "@/lib/documents";
@@ -29,6 +31,41 @@ describe("Version History and Snapshots", () => {
   beforeEach(() => {
     resetConfig();
     resetDb();
+  });
+
+  it.each([false, true])("preserves oldest-version image bytes during restore (outer rollback: %s)", (rollback) => {
+    const user = createUser("restore-image", "pass123", "USER");
+    const doc = createDocument(user.id, emptyScene());
+    const bytes = Buffer.from("unique oldest image");
+    const attachment = storeAttachment(doc.id, "old.png", "image/png", bytes, "old-image");
+    const scene = {
+      ...emptyScene(),
+      elements: [{ id: "image", type: "image", fileId: "old-image" }],
+      files: { "old-image": { id: "old-image", mimeType: "image/png", created: 1 } },
+    };
+    const oldest = createSnapshotFromScene(doc.id, scene, user.id, true);
+    for (let i = 1; i < MAX_VERSIONS; i++) {
+      createSnapshotFromScene(doc.id, emptyScene(), user.id, false);
+    }
+    const lease = leaseFor(doc.id, user.id);
+    const restore = () => transaction(() => {
+      restoreVersion(doc.id, oldest.id, user.id, "USER", false, lease);
+      if (rollback) throw new Error("abort outer transaction");
+    });
+    if (rollback) expect(restore).toThrow("abort outer transaction");
+    else expect(restore).not.toThrow();
+
+    expect(readFileSync(path.join(config().dataDir, attachment.file_path))).toEqual(bytes);
+    expect(listVersions(doc.id)).toHaveLength(MAX_VERSIONS);
+    if (rollback) {
+      expect(listVersions(doc.id).some((v) => v.id === oldest.id)).toBe(true);
+      expect(existsSync(path.join(config().dataDir, oldest.thumbnail_path!))).toBe(true);
+      expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual([]);
+    } else {
+      expect(jsonToScene(getDocumentRaw(doc.id)!.scene).elements).toEqual(scene.elements);
+      expect(listVersions(doc.id)[0].origin).toBe("restore");
+      expect(existsSync(path.join(config().dataDir, oldest.thumbnail_path!))).toBe(false);
+    }
   });
 
   it("should create snapshots and list history with version numbers", () => {

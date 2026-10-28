@@ -13,10 +13,10 @@ export async function POST(req: Request, { params }: Ctx) {
     if (!deckLease) return jsonError("Deck lease credentials are required", 400);
     assertActiveDeckEditLease({ deckId: id, userId: user.id, role: user.role, ...deckLease });
     if (body.scope === "all") {
-      return json({ result: resetRecordingBaseline(id, { scope: "all" }, user.id, user.role) });
+      return json({ result: resetRecordingBaseline(id, { scope: "all" }, user.id, user.role, deckLease) });
     }
     if (body.scope === "current" && typeof body.pageId === "string" && body.pageId) {
-      return json({ result: resetRecordingBaseline(id, { scope: "current", pageId: body.pageId }, user.id, user.role) });
+      return json({ result: resetRecordingBaseline(id, { scope: "current", pageId: body.pageId }, user.id, user.role, deckLease) });
     }
     return jsonError("scope must be all or current with pageId", 400);
   } catch (err) {

@@ -37,8 +37,14 @@ export async function POST(req: Request, { params }: Ctx) {
     if (!leaseCreds) {
       return jsonError("lease credentials are required", 400);
     }
+    const authorization = body.leaseScope === "deck"
+      ? (typeof body.deckId === "string" && body.deckId.trim()
+        ? { scope: "deck" as const, deckId: body.deckId, credentials: leaseCreds }
+        : null)
+      : leaseCreds;
+    if (!authorization) return jsonError("deckId is required for Deck-scoped restores", 400);
     const { restoreVersion } = await import("@/lib/versions");
-    const snapshot = restoreVersion(id, versionId, user.id, user.role, adminMode, leaseCreds);
+    const snapshot = restoreVersion(id, versionId, user.id, user.role, adminMode, authorization);
     return json({ ok: true, snapshot, versions: listVersions(id) });
   } catch (err) {
     return handleError(err);

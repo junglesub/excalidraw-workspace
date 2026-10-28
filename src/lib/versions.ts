@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { config } from "./config";
-import { getDb, transaction } from "./db";
+import { afterCommit, getDb, transaction } from "./db";
 import { getDocumentRaw, MAX_VERSIONS, AUTO_SNAPSHOT_INTERVAL_MS, requireWrite } from "./documents";
 import { saveThumbnail, saveThumbnailFromBuffer, removeThumbnail } from "./thumbnails";
 import { compactSceneFiles, gcUnreferencedAttachments } from "./attachments";
@@ -10,7 +10,7 @@ import { emptyScene, jsonToScene, sceneToJson } from "./types";
 import { HttpError } from "./http";
 import { serializeForComparison } from "./scene_normalize";
 import type { EditLeaseCredentials } from "./types";
-import { assertActiveEditLease, hasActiveEditLease } from "./edit_lease";
+import { assertActiveEditLease } from "./edit_lease";
 import { assertActiveDeckEditLease } from "./deck_edit_lease";
 
 export type { VersionOrigin };
@@ -56,10 +56,6 @@ export function assertSaveLeaseAuthorization(
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-export interface CreateSnapshotOptions {
-  thumbnail?: boolean;
 }
 
 /** Insert a recovery snapshot, trimming history to the newest MAX_VERSIONS. */
@@ -128,7 +124,7 @@ function insertSnapshot(
 
   for (const t of trimmed) {
     if (t.thumbnail_path && t.thumbnail_path !== `thumbnails/${docId}.png` && t.thumbnail_path !== `thumbnails\\${docId}.png`) {
-      removeThumbnail(t.thumbnail_path);
+      afterCommit(() => removeThumbnail(t.thumbnail_path));
     }
   }
 
@@ -158,7 +154,7 @@ export function createSnapshotFromDoc(
 ): DocumentVersionRow {
   const doc = getDocumentRaw(docId);
   if (!doc) throw new HttpError(404, "Document not found");
-  return insertSnapshot(docId, jsonToScene(doc.scene), createdBy, makeThumbnail, thumbnailBuffer, options);
+  return transaction(() => insertSnapshot(docId, jsonToScene(doc.scene), createdBy, makeThumbnail, thumbnailBuffer, options));
 }
 
 export function createSnapshotFromScene(
@@ -169,7 +165,7 @@ export function createSnapshotFromScene(
   thumbnailBuffer?: Buffer | null,
   options?: { allowInlineDataUrl?: boolean; origin?: VersionOrigin | null; pinned?: boolean },
 ): DocumentVersionRow {
-  return insertSnapshot(docId, scene, createdBy, makeThumbnail, thumbnailBuffer, options);
+  return transaction(() => insertSnapshot(docId, scene, createdBy, makeThumbnail, thumbnailBuffer, options));
 }
 
 export function createPinnedSnapshotFromDoc(
@@ -392,17 +388,17 @@ export function resolveRecoveryConflict(
  * state with origin "restore", then applies the selected history version
  * as the document current scene.
  */
-function restoreVersionInternal(
+export function restoreVersion(
   docId: string,
   versionId: string,
   actorId: string,
   role: "USER" | "ADMIN",
   adminMode: boolean,
-  assertLeaseSafety: () => void,
+  lease: SaveLeaseAuthorization,
 ): DocumentVersionRow {
   return transaction(() => {
     requireWrite(docId, actorId, role, adminMode);
-    assertLeaseSafety();
+    assertSaveLeaseAuthorization(docId, actorId, role, adminMode, lease);
     const version = getVersion(versionId);
     if (!version || version.document_id !== docId) {
       throw new HttpError(404, "Version not found");
@@ -456,35 +452,4 @@ function restoreVersionInternal(
   });
 }
 
-export function restoreVersion(
-  docId: string,
-  versionId: string,
-  actorId: string,
-  role: "USER" | "ADMIN",
-  adminMode: boolean,
-  lease: EditLeaseCredentials,
-): DocumentVersionRow {
-  return restoreVersionInternal(docId, versionId, actorId, role, adminMode, () => {
-    assertActiveEditLease({
-      docId, userId: actorId, role, adminMode, clientId: lease.clientId,
-      leaseToken: lease.leaseToken, generation: lease.generation,
-    });
-  });
-}
-
-export function restoreVersionWithoutLease(
-  docId: string,
-  versionId: string,
-  actorId: string,
-  role: "USER" | "ADMIN",
-  adminMode = false,
-): DocumentVersionRow {
-  return restoreVersionInternal(docId, versionId, actorId, role, adminMode, () => {
-    if (hasActiveEditLease(docId)) {
-      throw new HttpError(409, "Cannot restore while document has an active edit lease");
-    }
-  });
-}
-
 export { emptyScene };
-export const AUTO_INTERVAL = AUTO_SNAPSHOT_INTERVAL_MS;

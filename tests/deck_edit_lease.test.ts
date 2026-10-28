@@ -89,7 +89,9 @@ describe("deck edit lease behavior", () => {
   });
 });
 
-import { handleAutoSave } from "@/lib/versions";
+import { createSnapshotFromDoc, handleAutoSave, handleManualSave, resolveRecoveryConflict, restoreVersion } from "@/lib/versions";
+import { acquireEditLease } from "@/lib/edit_lease";
+import { getDocumentRaw } from "@/lib/documents";
 import { createBlankPage } from "@/lib/decks";
 import { emptyScene } from "@/lib/types";
 
@@ -97,6 +99,30 @@ describe("Deck lease Page save authorization", () => {
   beforeEach(() => {
     resetConfig();
     resetDb();
+  });
+
+  it("rejects standalone lease acquisition for a Deck backing document", () => {
+    const user = createUser("cross-scope", "pass123", "USER");
+    const deck = createDeck(user.id, "Deck");
+    acquireDeckEditLease({ deckId: deck.id, userId: user.id, role: "USER", clientId: "deck-tab", leaseToken: "deck-token" });
+    expect(() => acquireEditLease({ docId: deck.pages[0].documentId, userId: user.id, role: "USER", adminMode: false, clientId: "doc-tab", leaseToken: "doc-token" })).toThrow(/Deck/);
+  });
+
+  it("fences existing standalone credentials from saves, recovery and restore on a Deck page", () => {
+    const user = createUser("legacy-cross-scope", "pass123", "USER");
+    const deck = createDeck(user.id, "Deck");
+    const docId = deck.pages[0].documentId;
+    const snapshot = createSnapshotFromDoc(docId, user.id);
+    const lease = { clientId: "old-tab", leaseToken: "old-token", generation: 1 };
+    getDb().prepare(`INSERT INTO document_edit_leases
+      (document_id, holder_user_id, holder_client_id, lease_token, generation, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)`).run(docId, user.id, lease.clientId, lease.leaseToken, lease.generation, new Date(Date.now() + 90_000).toISOString());
+    expect(() => handleAutoSave(docId, user.id, "USER", false, emptyScene(), null, false, lease)).toThrow(/Deck/);
+    expect(() => handleManualSave(docId, user.id, "USER", false, emptyScene(), null, lease)).toThrow(/Deck/);
+    expect(() => resolveRecoveryConflict(docId, user.id, "USER", false, {
+      choice: "client", preserveDiscarded: false, expectedServerUpdatedAt: getDocumentRaw(docId)!.updated_at, clientScene: emptyScene(),
+    }, lease)).toThrow(/Deck/);
+    expect(() => restoreVersion(docId, snapshot.id, user.id, "USER", false, lease)).toThrow(/Deck/);
   });
 
   it("allows a Page backing Document to save under its owning Deck lease", () => {

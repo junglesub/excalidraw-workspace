@@ -2,11 +2,12 @@ import { getDb, transaction } from "./db";
 import { getDeck } from "./decks";
 import { getDocumentRaw } from "./documents";
 import { HttpError } from "./http";
-import { hasActiveEditLease } from "./edit_lease";
+import { assertActiveDeckEditLease } from "./deck_edit_lease";
+import type { EditLeaseCredentials } from "./types";
 import {
   createPinnedSnapshotFromDoc,
   getVersion,
-  restoreVersionWithoutLease,
+  restoreVersion,
 } from "./versions";
 
 export interface NamedSnapshot {
@@ -199,41 +200,40 @@ export function resetRecordingBaseline(
   input: BaselineResetInput,
   userId: string,
   role: "USER" | "ADMIN",
+  lease: EditLeaseCredentials,
 ): BaselineResetResult {
-  const deck = getDeck(deckId, userId, role);
-  const baseline = getActiveRecordingBaseline(deckId, userId, role);
-  if (!baseline) throw new HttpError(409, "No active recording baseline");
-
-  const baselinePages = input.scope === "current"
-    ? baseline.pages.filter((page) => page.pageId === input.pageId)
-    : baseline.pages;
-  if (input.scope === "current" && baselinePages.length === 0) {
-    return { restoredPageIds: [], skippedPageIds: [input.pageId] };
-  }
-
-  const currentById = new Map(deck.pages.map((page) => [page.id, page]));
-  const targets: RecordingBaselinePage[] = [];
-  const skippedPageIds: string[] = [];
-
-  for (const baselinePage of baselinePages) {
-    const current = currentById.get(baselinePage.pageId);
-    if (!current || current.documentId !== baselinePage.documentId || !getDocumentRaw(baselinePage.documentId)) {
-      skippedPageIds.push(baselinePage.pageId);
-      continue;
-    }
-    const version = getVersion(baselinePage.snapshotId);
-    if (!version || version.document_id !== baselinePage.documentId) {
-      throw new HttpError(409, `Baseline snapshot is unavailable for page ${baselinePage.pageId}`);
-    }
-    if (hasActiveEditLease(baselinePage.documentId)) {
-      throw new HttpError(409, `Cannot reset page ${baselinePage.pageId}: active edit lease`);
-    }
-    targets.push(baselinePage);
-  }
-
   return transaction(() => {
+    assertActiveDeckEditLease({ deckId, userId, role, ...lease });
+    const deck = getDeck(deckId, userId, role);
+    const baseline = getActiveRecordingBaseline(deckId, userId, role);
+    if (!baseline) throw new HttpError(409, "No active recording baseline");
+
+    const baselinePages = input.scope === "current"
+      ? baseline.pages.filter((page) => page.pageId === input.pageId)
+      : baseline.pages;
+    if (input.scope === "current" && baselinePages.length === 0) {
+      return { restoredPageIds: [], skippedPageIds: [input.pageId] };
+    }
+
+    const currentById = new Map(deck.pages.map((page) => [page.id, page]));
+    const targets: RecordingBaselinePage[] = [];
+    const skippedPageIds: string[] = [];
+
+    for (const baselinePage of baselinePages) {
+      const current = currentById.get(baselinePage.pageId);
+      if (!current || current.documentId !== baselinePage.documentId || !getDocumentRaw(baselinePage.documentId)) {
+        skippedPageIds.push(baselinePage.pageId);
+        continue;
+      }
+      const version = getVersion(baselinePage.snapshotId);
+      if (!version || version.document_id !== baselinePage.documentId) {
+        throw new HttpError(409, `Baseline snapshot is unavailable for page ${baselinePage.pageId}`);
+      }
+      targets.push(baselinePage);
+    }
+
     for (const target of targets) {
-      restoreVersionWithoutLease(target.documentId, target.snapshotId, userId, role, false);
+      restoreVersion(target.documentId, target.snapshotId, userId, role, false, { scope: "deck", deckId, credentials: lease });
     }
     return { restoredPageIds: targets.map((target) => target.pageId), skippedPageIds };
   });

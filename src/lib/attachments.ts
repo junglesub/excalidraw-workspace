@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from "node:crypto";
 import path from "node:path";
 import { mkdirSync, readFileSync, rmSync, writeFileSync, renameSync, existsSync } from "node:fs";
-import { getDb } from "./db";
+import { afterCommit, getDb } from "./db";
 import { config } from "./config";
 import type { AttachmentRow, ExcalidrawScene } from "./types";
 import { getDocumentRaw } from "./documents";
@@ -50,16 +50,6 @@ export function getAttachment(docId: string, id: string): AttachmentRow | undefi
   return getDb()
     .prepare("SELECT * FROM attachments WHERE document_id = ? AND id = ?")
     .get(docId, id) as AttachmentRow | undefined;
-}
-
-/** Global or document-scoped lookup for an attachment row. */
-export function getAttachmentById(id: string, docId?: string): AttachmentRow | undefined {
-  if (docId) {
-    return getAttachment(docId, id);
-  }
-  return getDb()
-    .prepare("SELECT * FROM attachments WHERE id = ? LIMIT 1")
-    .get(id) as AttachmentRow | undefined;
 }
 
 export function listAttachments(docId: string): AttachmentRow[] {
@@ -437,6 +427,10 @@ export function hydrateSceneFiles(docId: string, scene: ExcalidrawScene): Excali
  * active document scene nor in any surviving recovery snapshot for this document.
  */
 export function gcUnreferencedAttachments(docId: string): void {
+  afterCommit(() => collectUnreferencedAttachments(docId));
+}
+
+function collectUnreferencedAttachments(docId: string): void {
   if (!SAFE_ID_REGEX.test(docId)) return;
 
   const referencedFileIds = new Set<string>();
@@ -488,26 +482,5 @@ export function gcUnreferencedAttachments(docId: string): void {
         // ignore
       }
     }
-  }
-}
-
-/**
- * Delete an attachment's physical file only when no longer referenced by the
- * current scene or any preserved snapshot (version-safe retention).
- */
-export function deleteAttachmentIfUnreferenced(docId: string, attachmentId: string): boolean {
-  gcUnreferencedAttachments(docId);
-  return getAttachment(docId, attachmentId) === undefined;
-}
-
-/** Force-remove an attachment regardless of references (used on permanent delete). */
-export function forceDeleteAttachment(attachmentId: string, docId?: string): void {
-  const row = getAttachmentById(attachmentId, docId);
-  if (!row) return;
-  getDb().prepare("DELETE FROM attachments WHERE document_id = ? AND id = ?").run(row.document_id, attachmentId);
-  try {
-    rmSync(resolveAttachmentFilesystem(row), { force: true });
-  } catch {
-    // ignore
   }
 }

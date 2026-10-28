@@ -319,7 +319,7 @@ describe("Document edit lease state machine", () => {
     if (first.state !== "acquired") throw new Error();
     const gen1 = first.generation;
 
-    const releaseRes = releaseEditLease(
+    releaseEditLease(
       { docId: doc.id, userId: holder.id, role: "USER", adminMode: false, clientId: "client-a", leaseToken: "token-a", generation: gen1 },
       new Date(NOW.getTime() + 1000),
     );

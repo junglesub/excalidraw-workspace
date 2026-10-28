@@ -482,7 +482,7 @@ describe("Initial acquire strict mode coordinator", () => {
 
     const finalizeAcquisition = async (
       docId: string,
-      creds: EditLeaseCredentials,
+      _creds: EditLeaseCredentials,
       isCurrent?: () => boolean,
     ) => {
       try {

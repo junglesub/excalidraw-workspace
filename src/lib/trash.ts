@@ -1,8 +1,7 @@
 import path from "node:path";
 import { rmSync } from "node:fs";
 import { getDb, transaction } from "./db";
-import { getDocumentRaw, requireRead } from "./documents";
-import { forceDeleteAttachment } from "./attachments";
+import { getDocumentRaw } from "./documents";
 import { removeThumbnail } from "./thumbnails";
 import { config } from "./config";
 import { HttpError } from "./http";
@@ -77,15 +76,4 @@ export function permanentDelete(
   if (resolvedDocDir.startsWith(resolvedAttachmentsDir + path.sep)) {
     rmSync(resolvedDocDir, { recursive: true, force: true });
   }
-}
-
-/** Convenience wrapper: verify read access first (owner/admin), then purge. */
-export function requireOwnerAndPurge(
-  docId: string,
-  userId: string,
-  role: "USER" | "ADMIN",
-  adminMode = false,
-): void {
-  requireRead(docId, userId, role, adminMode);
-  permanentDelete(docId, userId, role, adminMode);
 }

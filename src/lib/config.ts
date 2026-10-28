@@ -12,8 +12,6 @@ export interface AppConfig {
   thumbnailsDir: string;
   adminUsername: string | undefined;
   adminPassword: string | undefined;
-  sessionSecret: string;
-  port: number;
 }
 
 function resolveDataDir(): string {
@@ -41,10 +39,6 @@ export function loadConfig(): AppConfig {
     thumbnailsDir,
     adminUsername,
     adminPassword,
-    sessionSecret:
-      process.env.SESSION_SECRET ||
-      `pew-default-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-    port: Number(process.env.PORT || 3000),
   };
 }
 

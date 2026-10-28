@@ -63,7 +63,7 @@ describe("Storage & Database Maintenance", () => {
 
   it("should detect legacy inline image scenes and distinguish from compact scenes", () => {
     const user = createUser("alice", "pass123", "USER");
-    const doc1 = createDocument(user.id, emptyScene(), "Normal Doc");
+    createDocument(user.id, emptyScene(), "Normal Doc");
 
     // Legacy scene with dataURL
     const legacyScene = {
@@ -173,7 +173,7 @@ describe("Storage & Database Maintenance", () => {
 
     try {
       // Run cleanup
-      const result = cleanOrphans(true);
+      cleanOrphans(true);
 
       // Symlink must survive and external target file must survive untouched
       expect(fs.existsSync(symlinkPath)).toBe(true);

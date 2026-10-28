@@ -8,6 +8,7 @@ import { getDocumentWithScene, updateScene } from "@/lib/documents";
 import { emptyScene, type ExcalidrawScene } from "@/lib/types";
 import { nextPresentationPageId, presentationToolType } from "@/lib/presentation";
 import { resetRecordingBaseline, setRecordingBaseline } from "@/lib/presentation_snapshots";
+import { acquireDeckEditLease } from "@/lib/deck_edit_lease";
 
 function sceneWith(element: Record<string, unknown>): ExcalidrawScene {
   return { ...emptyScene(), elements: [element] };
@@ -44,7 +45,9 @@ describe("video presentation MVP automated validation", () => {
     const later = createBlankPage(created.id, user.id, "USER");
     updateScene(later.documentId, sceneWith({ id: "post-baseline", type: "rectangle", isDeleted: false }), user.id, "USER");
 
-    const result = resetRecordingBaseline(created.id, { scope: "all" }, user.id, "USER");
+    const lease = acquireDeckEditLease({ deckId: created.id, userId: user.id, role: "USER", clientId: "mvp-tab", leaseToken: "mvp-token" });
+    if (lease.state !== "acquired") throw new Error("expected Deck lease");
+    const result = resetRecordingBaseline(created.id, { scope: "all" }, user.id, "USER", lease);
 
     expect(result.restoredPageIds).toHaveLength(10);
     expect(result.skippedPageIds).toEqual([]);

@@ -13,6 +13,13 @@ const { DatabaseSync: NodeDatabaseSync } = nodeRequire("node:sqlite") as {
  * concurrent-read support.
  */
 let db: DatabaseSync | null = null;
+let commitActions: Array<() => void> | undefined;
+
+/** File cleanup must not run while SQL changes can still roll back. */
+export function afterCommit(action: () => void): void {
+  if (commitActions) commitActions.push(action);
+  else action();
+}
 
 export function getDb(): DatabaseSync {
   if (!db) {
@@ -73,14 +80,23 @@ export function transaction<T>(fn: () => T): T {
     return fn();
   }
   database.exec("BEGIN IMMEDIATE;");
+  const actions: Array<() => void> = [];
+  commitActions = actions;
+  let result: T;
   try {
-    const result = fn();
+    result = fn();
     database.exec("COMMIT;");
-    return result;
   } catch (err) {
     database.exec("ROLLBACK;");
     throw err;
+  } finally {
+    commitActions = undefined;
   }
+  for (const action of actions) {
+    try { action(); }
+    catch (err) { console.error("[storage] post-commit cleanup failed", err); }
+  }
+  return result;
 }
 
 const SCHEMA_SQL = `

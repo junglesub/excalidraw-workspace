@@ -56,7 +56,6 @@ export default function EmbeddedPageEditor({ documentId, user, onSaved, controlR
       docId={documentId}
       initialTitle={data.document.title}
       initialScene={data.scene}
-      initialUpdatedAt={data.document.updated_at}
       permission={data.permission}
       deleted={!!data.document.deleted_at}
       embedded

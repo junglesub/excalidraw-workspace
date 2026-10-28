@@ -32,7 +32,6 @@ export default async function DocumentPage({ params, searchParams }: PageProps) 
       docId={id}
       initialTitle={meta.title}
       initialScene={scene}
-      initialUpdatedAt={meta.updated_at}
       permission={meta.permission}
       deleted={!!doc.deleted_at}
       adminMode={effectiveAdminMode}

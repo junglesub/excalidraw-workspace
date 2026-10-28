@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, shouldReadLocalDraft, getEditorContextId, parseEditorContextId, leaseCredentialsKey, readStoredLeaseCredentials, storeLeaseCredentials, clearStoredLeaseCredentials } from "@/lib/client_edit_lease";
 import { ApiError } from "@/lib/client";
 import { saveDocumentScene, resolveClientRecovery } from "@/lib/client_save";

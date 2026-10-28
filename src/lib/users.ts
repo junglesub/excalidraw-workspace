@@ -1,4 +1,4 @@
-import { getDb, transaction } from "./db";
+import { getDb } from "./db";
 import { config } from "./config";
 import type { PublicUser, SessionRow, UserRow } from "./types";
 import { hashPassword } from "./passwords";
@@ -54,12 +54,6 @@ export function setActive(id: string, active: boolean): void {
     .run(active ? 1 : 0, new Date().toISOString(), id);
 }
 
-export function setUsername(id: string, username: string): void {
-  getDb()
-    .prepare("UPDATE users SET username = ?, updated_at = ? WHERE id = ?")
-    .run(username, new Date().toISOString(), id);
-}
-
 export function setPassword(id: string, plainPassword: string): void {
   getDb()
     .prepare("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?")
@@ -75,11 +69,6 @@ export function hasAnyAdmin(): boolean {
     .prepare("SELECT COUNT(*) AS c FROM users WHERE role = 'ADMIN'")
     .get() as { c: number };
   return row.c > 0;
-}
-
-export function countUsers(): number {
-  const row = getDb().prepare("SELECT COUNT(*) AS c FROM users").get() as { c: number };
-  return row.c;
 }
 
 export function bootstrapAdmin(): void {

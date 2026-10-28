@@ -5,6 +5,10 @@ import { createSession, createUser } from "@/lib/users";
 import { SESSION_COOKIE } from "@/lib/http";
 import { createDeck } from "@/lib/decks";
 import { acquireDeckEditLease } from "@/lib/deck_edit_lease";
+import { createSnapshotFromDoc, handleAutoSave } from "@/lib/versions";
+import { getDocumentRaw } from "@/lib/documents";
+import { emptyScene, jsonToScene } from "@/lib/types";
+import { POST as restorePost } from "@/app/api/documents/[id]/versions/route";
 import {
   GET as baselineGet,
   POST as baselinePost,
@@ -131,6 +135,25 @@ describe("presentation snapshot routes", () => {
     });
     expect(res.status).toBe(401);
   });
+});
+
+it("restores embedded Page history with Deck credentials and rejects an expired holder", async () => {
+  const user = createUser("deck-history", "pass123", "USER");
+  const token = createSession(user.id).token;
+  const deck = createDeck(user.id, "Deck");
+  const docId = deck.pages[0].documentId;
+  const snapshot = createSnapshotFromDoc(docId, user.id);
+  const lease = acquireDeckCredentials(deck.id, user.id);
+  const authorization = { scope: "deck" as const, deckId: deck.id, credentials: lease };
+  handleAutoSave(docId, user.id, "USER", false, { ...emptyScene(), elements: [{ id: "edit", type: "rectangle" }] }, null, false, authorization);
+  const url = `http://localhost/api/documents/${docId}/versions?action=restore&versionId=${snapshot.id}`;
+  const restore = (credentials = lease) => restorePost(req(url, token, {
+    method: "POST", body: JSON.stringify({ lease: credentials, leaseScope: "deck", deckId: deck.id }),
+  }), { params: Promise.resolve({ id: docId }) });
+  expect((await restore({ ...lease, generation: lease.generation + 1 })).status).toBe(409);
+  expect(jsonToScene(getDocumentRaw(docId)!.scene).elements).toHaveLength(1);
+  expect((await restore()).status).toBe(200);
+  expect(jsonToScene(getDocumentRaw(docId)!.scene).elements).toEqual([]);
 });
 
 it("requires the active Deck lease for recording baseline mutations", async () => {

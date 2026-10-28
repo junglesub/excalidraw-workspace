@@ -4,7 +4,6 @@ import {
   uploadNewAttachments,
   saveDocumentScene,
   evaluateInFlightSaveState,
-  getActiveImageFileIds,
   serializeSceneForComparison,
   sceneForLocalDraft,
   decideDraftForAccess,

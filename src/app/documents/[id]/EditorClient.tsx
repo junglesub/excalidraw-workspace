@@ -19,7 +19,7 @@ import {
   sceneMatchesLastSaved,
   getManualSaveStatus,
 } from "@/lib/client_save";
-import { acquireLease, heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, waitForNoSaving, shouldRecoverHandoffToActive, shouldSkipHandoffForRestore, credentialKey, dispatchRelease, getEditorContextId, readStoredLeaseCredentials, storeLeaseCredentials, clearStoredLeaseCredentials, InitialLeaseCoordinator } from "@/lib/client_edit_lease";
+import { heartbeatLease, requestTakeover, pollTakeover, releaseLease, canMutateCanvas, waitForNoSaving, shouldRecoverHandoffToActive, shouldSkipHandoffForRestore, credentialKey, dispatchRelease, getEditorContextId, readStoredLeaseCredentials, storeLeaseCredentials, clearStoredLeaseCredentials, InitialLeaseCoordinator } from "@/lib/client_edit_lease";
 import type { EditorLeaseMode } from "@/lib/client_edit_lease";
 import type { DeckAspectRatio, EditLeaseCredentials, ExcalidrawScene, Permission, LeaseHolderSummary } from "@/lib/types";
 import type { LocalDraftEnvelope } from "@/lib/client_save";
@@ -66,7 +66,6 @@ interface Props {
   docId: string;
   initialTitle: string;
   initialScene: ExcalidrawScene;
-  initialUpdatedAt?: string;
   permission: Permission;
   deleted: boolean;
   adminMode?: boolean;
@@ -109,7 +108,6 @@ export default function EditorClient({
   docId,
   initialTitle,
   initialScene,
-  initialUpdatedAt,
   permission: initialPermission,
   deleted: initialDeleted,
   adminMode: initialAdminMode = false,
@@ -122,7 +120,7 @@ export default function EditorClient({
 }: Props) {
   const router = useRouter();
   const [currentPermission, setCurrentPermission] = useState<Permission>(initialPermission);
-  const [isDeleted, setIsDeleted] = useState(initialDeleted);
+  const isDeleted = initialDeleted;
 
   const hasWritePermission = currentPermission !== "VIEWER" && !isDeleted;
   const adminMode = initialAdminMode;
@@ -188,7 +186,6 @@ export default function EditorClient({
 
   const [versions, setVersions] = useState<VersionRow[]>([]);
   const [showVersions, setShowVersions] = useState(false);
-  const [previewVersion, setPreviewVersion] = useState<VersionRow | null>(null);
 
   const [showShare, setShowShare] = useState(false);
   const [members, setMembers] = useState<MemberRow[]>([]);
@@ -974,7 +971,7 @@ export default function EditorClient({
       setStatus("Restoring version...", "saving");
       await api(withAdminMode(`/api/documents/${docId}/versions?action=restore&versionId=${versionId}`), {
         method: "POST",
-        body: JSON.stringify({ lease: creds }),
+        body: JSON.stringify({ lease: creds, ...(externalDeckLease ? { leaseScope: "deck", deckId: externalDeckLease.deckId } : {}) }),
       });
       const data = await api<{ document: { title: string }; scene: ExcalidrawScene; permission: Permission }>(withAdminMode(`/api/documents/${docId}`));
       sceneRef.current = data.scene;

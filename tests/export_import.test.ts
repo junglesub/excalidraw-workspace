@@ -12,12 +12,6 @@ import {
   storeAttachment,
   listAttachments,
   readAttachmentBytes,
-  deleteAttachmentIfUnreferenced,
-  compactSceneFiles,
-  hydrateSceneFiles,
-  gcUnreferencedAttachments,
-  attachUrl,
-  getAttachment,
 } from "@/lib/attachments";
 import { GET as getAttachmentRoute } from "@/app/api/attachments/[attachmentId]/route";
 import { GET as getExportRoute } from "@/app/api/documents/[id]/export/route";

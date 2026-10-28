@@ -10,7 +10,7 @@ interface Ctx {
  * Anonymous read-only access to a document via a share token.
  * Requires a valid, un-expired, active link.
  */
-export async function GET(req: Request, { params }: Ctx) {
+export async function GET(_req: Request, { params }: Ctx) {
   try {
     const { token } = await params;
     // Re-export guard from share_links.

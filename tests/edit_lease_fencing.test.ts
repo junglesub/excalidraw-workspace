@@ -5,7 +5,7 @@ import { addMember, createDocument, getDocumentRaw } from "@/lib/documents";
 import { createUser } from "@/lib/users";
 import { acquireEditLease, requestEditTakeover, pollEditTakeover, TAKEOVER_TIMEOUT_MS } from "@/lib/edit_lease";
 import { handleManualSave, resolveRecoveryConflict, restoreVersion, createSnapshotFromScene, listVersions, handleAutoSave } from "@/lib/versions";
-import { emptyScene, jsonToScene, sceneToJson } from "@/lib/types";
+import { emptyScene, jsonToScene } from "@/lib/types";
 
 describe("Edit lease fencing of mutations", () => {
   const NOW = new Date();

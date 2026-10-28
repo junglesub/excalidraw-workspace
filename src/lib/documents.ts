@@ -12,7 +12,6 @@ import { jsonToScene, sceneToJson } from "./types";
 import { HttpError } from "./http";
 
 export const MAX_VERSIONS = 20;
-export const AUTO_SAVE_DEBOUNCE_MS = 3000; // ~3s debounce
 export const AUTO_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 /** Effective permission an authenticated user holds over a document. */
@@ -263,19 +262,6 @@ export function restoreDocument(docId: string, userId: string, role: "USER" | "A
   getDb()
     .prepare("UPDATE documents SET deleted_at = NULL, updated_at = ? WHERE id = ?")
     .run(new Date().toISOString(), docId);
-}
-
-/** Whether the current document scene references a file token (URL/ref). */
-export function isSceneReferencingAttachment(doc: DocumentRow, token: string): boolean {
-  return doc.scene.includes(token);
-}
-
-/** Whether any preserved snapshot references the token. */
-export function isAnySnapshotReferencingAttachment(docId: string, token: string): boolean {
-  const rows = getDb()
-    .prepare("SELECT scene FROM document_versions WHERE document_id = ?")
-    .all(docId) as { scene: string }[];
-  return rows.some((r) => r.scene.includes(token));
 }
 
 function upsertMember(docId: string, userId: string, permission: Permission, now: string) {

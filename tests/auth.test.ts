@@ -10,7 +10,6 @@ import {
   getUserBySessionToken,
   deleteSession,
   deleteSessionsForUser,
-  deleteSessionsForUserExcept,
   setPassword,
   setActive,
   toPublicUser,

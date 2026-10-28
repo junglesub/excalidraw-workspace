@@ -33,10 +33,6 @@ export function findSessionToken(req: Request): string | undefined {
   return cookies[SESSION_COOKIE];
 }
 
-export interface Authed {
-  user: UserRow;
-}
-
 /**
  * Resolve the current authenticated user from the request cookie.
  * Throws HttpError(401) if missing/expired/inactive.
