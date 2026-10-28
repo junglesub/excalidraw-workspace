@@ -5,6 +5,7 @@ import {
   getFontFamilyCss,
   normalizeUrlText,
   scenePointForClientPoint,
+  urlTextGlyphColor,
   stripUrlTextStyle,
   styleUrlTextElements,
   coversCompletely,
@@ -60,6 +61,16 @@ describe("URL text detection", () => {
     expect(urlTextHref(textElement({ containerId: "rect-1" }))).toBeNull();
     expect(urlTextHref(textElement({ isDeleted: true }))).toBeNull();
     expect(urlTextHref(textElement({ type: "rectangle", text: "https://example.com" }))).toBeNull();
+  });
+});
+
+describe("URL glyph paint colour", () => {
+  it("uses the link colour only when the whole run is a web URL", () => {
+    expect(urlTextGlyphColor("https://example.com")).toBe(URL_TEXT_COLOR);
+    expect(urlTextGlyphColor("  www.example.com/docs  ")).toBe(URL_TEXT_COLOR);
+    expect(urlTextGlyphColor("see https://example.com")).toBeNull();
+    expect(urlTextGlyphColor("plain text")).toBeNull();
+    expect(urlTextGlyphColor("https://example.com/\nsecond")).toBeNull();
   });
 });
 

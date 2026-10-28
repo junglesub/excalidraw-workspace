@@ -18,13 +18,17 @@ import {
   resetErroredImageElements,
 } from "@/lib/client_attachments";
 import {
-  getFontFamilyCss,
+  installUrlTextGlyphPaint,
   scenePointForClientPoint,
   stripUrlTextStyle,
   urlTextAtScenePoint,
   urlTextUnderlines,
   type UrlTextUnderline,
 } from "@/lib/url_text";
+
+// Before Excalidraw's first text raster, so the element cache is born in the
+// link colour instead of the stored colour.
+installUrlTextGlyphPaint();
 
 interface UrlTextOverlayState {
   transform: string;
@@ -331,104 +335,83 @@ export default function ExcalidrawCanvas({
         </div>
       )}
       {urlOverlay.lines.length > 0 && (
-        <div
-          aria-hidden="true"
-          data-testid="url-text-underlines"
-          className="absolute inset-0 z-10 overflow-hidden pointer-events-none select-none"
-        >
-          <div className="absolute left-0 top-0 origin-top-left" style={{ transform: urlOverlay.transform }}>
-            {urlOverlay.lines.map((line) => {
-              if (line.id === urlOverlay.editingId) return null;
-              const textX =
-                line.textAlign === "center"
-                  ? line.width / 2
-                  : line.textAlign === "right"
-                  ? line.width
-                  : 0;
-              const textAnchor =
-                line.textAlign === "center"
-                  ? "middle"
-                  : line.textAlign === "right"
-                  ? "end"
-                  : "start";
-              return (
-                <div
-                  key={line.id}
-                  className="absolute pointer-events-none select-none"
-                  style={{
-                    left: line.x,
-                    top: line.y,
-                    width: line.width,
-                    height: line.height,
-                    opacity: line.opacity,
-                    transform: line.angle ? `rotate(${line.angle}rad)` : undefined,
-                  }}
-                >
-                  <svg
-                    className="absolute inset-0 w-full h-full overflow-visible pointer-events-none select-none"
-                    aria-hidden="true"
+          <div
+            aria-hidden="true"
+            data-testid="url-text-underlines"
+            className="absolute inset-0 overflow-hidden pointer-events-none select-none"
+            style={{ zIndex: 2 /* above the scene canvas (1), below editor UI (3+) */ }}
+          >
+            <div className="absolute left-0 top-0 origin-top-left" style={{ transform: urlOverlay.transform }}>
+              {urlOverlay.lines.map((line) => {
+                if (line.id === urlOverlay.editingId) return null;
+                return (
+                  <div
+                    key={line.id}
+                    data-url={line.text}
+                    className="absolute pointer-events-none select-none"
+                    style={{
+                      left: line.x,
+                      top: line.y,
+                      width: line.width,
+                      height: line.height,
+                      opacity: line.opacity,
+                      transform: line.angle ? `rotate(${line.angle}rad)` : undefined,
+                    }}
                   >
-                    {line.coveringElements && line.coveringElements.length > 0 && (
-                      <mask id={`url-mask-${line.id}`}>
-                        <rect x="-50000" y="-50000" width="100000" height="100000" fill="white" />
-                        {line.coveringElements.map((cov, idx) => {
-                          const transform = cov.angle
-                            ? `rotate(${(cov.angle * 180) / Math.PI} ${cov.cx} ${cov.cy})`
-                            : undefined;
-                          if (cov.type === "ellipse") {
-                            return (
-                              <ellipse
-                                key={idx}
-                                cx={cov.cx}
-                                cy={cov.cy}
-                                rx={cov.width / 2}
-                                ry={cov.height / 2}
-                                transform={transform}
-                                fill="black"
-                              />
-                            );
-                          }
-                          if (cov.type === "diamond") {
-                            const halfW = cov.width / 2;
-                            const halfH = cov.height / 2;
-                            const pts = `${cov.cx},${cov.cy - halfH} ${cov.cx + halfW},${cov.cy} ${cov.cx},${cov.cy + halfH} ${cov.cx - halfW},${cov.cy}`;
-                            return (
-                              <polygon
-                                key={idx}
-                                points={pts}
-                                transform={transform}
-                                fill="black"
-                              />
-                            );
-                          }
-                          return (
-                            <rect
-                              key={idx}
-                              x={cov.x}
-                              y={cov.y}
-                              width={cov.width}
-                              height={cov.height}
-                              transform={transform}
-                              fill="black"
-                            />
-                          );
-                        })}
-                      </mask>
-                    )}
-                    <g mask={line.coveringElements && line.coveringElements.length > 0 ? `url(#url-mask-${line.id})` : undefined}>
-                      <text
-                        x={textX}
-                        y={line.baseline}
-                        textAnchor={textAnchor}
-                        fill={line.color}
-                        stroke={line.color}
-                        strokeWidth="0.5"
-                        paintOrder="stroke fill"
-                        fontFamily={getFontFamilyCss(line.fontFamily)}
-                        fontSize={`${line.fontSize}px`}
-                      >
+                    <svg
+                      className="absolute inset-0 w-full h-full overflow-visible pointer-events-none select-none"
+                      aria-hidden="true"
+                    >
+                      <text fill="none" stroke="none" fontSize="0">
                         {line.text}
                       </text>
+                      {line.coveringElements && line.coveringElements.length > 0 && (
+                        <mask id={`url-mask-${line.id}`}>
+                          <rect x="-50000" y="-50000" width="100000" height="100000" fill="white" />
+                          {line.coveringElements.map((cov, idx) => {
+                            const transform = cov.angle
+                              ? `rotate(${(cov.angle * 180) / Math.PI} ${cov.cx} ${cov.cy})`
+                              : undefined;
+                            if (cov.type === "ellipse") {
+                              return (
+                                <ellipse
+                                  key={idx}
+                                  cx={cov.cx}
+                                  cy={cov.cy}
+                                  rx={cov.width / 2}
+                                  ry={cov.height / 2}
+                                  transform={transform}
+                                  fill="black"
+                                />
+                              );
+                            }
+                            if (cov.type === "diamond") {
+                              const halfW = cov.width / 2;
+                              const halfH = cov.height / 2;
+                              const pts = `${cov.cx},${cov.cy - halfH} ${cov.cx + halfW},${cov.cy} ${cov.cx},${cov.cy + halfH} ${cov.cx - halfW},${cov.cy}`;
+                              return (
+                                <polygon
+                                  key={idx}
+                                  points={pts}
+                                  transform={transform}
+                                  fill="black"
+                                />
+                              );
+                            }
+                            return (
+                              <rect
+                                key={idx}
+                                x={cov.x}
+                                y={cov.y}
+                                width={cov.width}
+                                height={cov.height}
+                                transform={transform}
+                                fill="black"
+                              />
+                            );
+                          })}
+                        </mask>
+                      )}
                       <rect
                         x="0"
                         y={line.underlineTop}
@@ -436,14 +419,14 @@ export default function ExcalidrawCanvas({
                         height={line.underlineHeight}
                         rx="1"
                         fill={line.color}
+                        mask={line.coveringElements && line.coveringElements.length > 0 ? `url(#url-mask-${line.id})` : undefined}
                       />
-                    </g>
-                  </svg>
-                </div>
-              );
-            })}
+                    </svg>
+                  </div>
+                );
+              })}
+            </div>
           </div>
-        </div>
       )}
       {recordingFrameAspectRatio && frameStyle && (
         <div

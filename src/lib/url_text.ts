@@ -1,10 +1,11 @@
-// URL text on the canvas: detect web-URL text elements, render them with a
-// light-blue glyph overlay and underline, and resolve Ctrl/Cmd+click targets.
+// URL text on the canvas: detect web-URL text elements, present them in light
+// blue with an underline, and resolve Ctrl/Cmd+click targets.
 //
-// The visual overlay provides the visible light-blue URL presentation
-// (both glyphs and underline) without substituting stored scene text colours.
-// By keeping stored scene element colours untouched, Excalidraw's native history,
-// deltas, undo/redo, save, and reload remain sound and faithful without ambiguous ownership.
+// Glyphs are painted once, by the canvas text renderer, in the link colour.
+// A second DOM copy of the glyphs sat in front of the stored glyphs and in
+// front of the editor UI, which read as an outline and as text floating over
+// toolbars. Stored scene colours are never rewritten, so history, undo, and
+// save keep the document colour.
 
 /** Slightly light blue used for URL text presentation (glyphs & underline) and links. */
 export const URL_TEXT_COLOR = "#4dabf7";
@@ -138,6 +139,44 @@ export function normalizeUrlText(raw: string | null | undefined): string | null 
   } catch {
     return null;
   }
+}
+
+/**
+ * Colour to use when the canvas paints a text run whose entire contents are a
+ * web URL, or null for ordinary text. The canvas calls this per line.
+ */
+export function urlTextGlyphColor(text: string): string | null {
+  return normalizeUrlText(text) ? URL_TEXT_COLOR : null;
+}
+
+let urlTextGlyphPaintInstalled = false;
+
+/**
+ * Paints URL text runs in the link colour at draw time. Element data is left
+ * unchanged, so a second glyph layer is unnecessary.
+ */
+export function installUrlTextGlyphPaint(): void {
+  if (urlTextGlyphPaintInstalled || typeof CanvasRenderingContext2D === "undefined") return;
+  urlTextGlyphPaintInstalled = true;
+  const original = CanvasRenderingContext2D.prototype.fillText;
+  CanvasRenderingContext2D.prototype.fillText = function (
+    text: string,
+    x: number,
+    y: number,
+    maxWidth?: number,
+  ) {
+    const color = urlTextGlyphColor(typeof text === "string" ? text : String(text));
+    if (!color) {
+      if (maxWidth === undefined) original.call(this, text, x, y);
+      else original.call(this, text, x, y, maxWidth);
+      return;
+    }
+    const previous = this.fillStyle;
+    this.fillStyle = color;
+    if (maxWidth === undefined) original.call(this, text, x, y);
+    else original.call(this, text, x, y, maxWidth);
+    this.fillStyle = previous;
+  };
 }
 
 /** True for a standalone text element whose entire (trimmed) text is a web URL. */
