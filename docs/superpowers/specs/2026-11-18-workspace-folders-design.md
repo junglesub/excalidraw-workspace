@@ -16,6 +16,10 @@ The user confirmed the feature scope. The recommended approach and defaults belo
 
 ## Proposed behavior
 
+### Follow-up: inline New Folder creation
+
+Requested after the initial feature review: clicking New Folder should insert a draft folder card in the current folder grid and edit its name there, rather than opening a creation dialog. Show and focus the inline name field even in empty or search-filtered folders. Enter or a nonempty blur saves; Escape cancels without creating a server record. Blank blur cancels, while an invalid submitted name or failed request shows a local error and permits retry. Prevent duplicate blur/Enter submissions and capture the intended parent folder. Existing folder rename and Move dialogs retain their current behavior. This follow-up supersedes the creation-dialog interaction only. Implementation is delegated to the newly opened Antigravity terminal; Codex independently verifies it. No production build is authorized.
+
 - My Documents shows immediate child folders, Decks, and documents; breadcrumbs navigate ancestors. Keep the existing tabs and card styles.
 - Create, rename, move, and delete folders. Names are trimmed, required, and limited to 100 characters. Duplicate names are allowed; identity comes from IDs.
 - Move actions offer a destination selector including root. Reject moving folders into themselves or descendants.
