@@ -261,3 +261,11 @@ Independent coordinator browser coverage includes dashboard folder creation and 
 2. Browser-dispatched event reproduction (not an OS-level IME typing test): fill the draft with `한글조합검증`, dispatch a bubbling/cancellable keydown with `key: 'Enter'`, `isComposing: true`, `keyCode: 229`. The event is prevented and a folder is persisted. The handler treats composition confirmation as submission. Ignore composing Enter events and their relevant browser fallback before submitting.
 
 Correction scope: distinguish navigation/repeated-New-Folder intent before blur, retain ordinary nonempty blur submission, guard composition confirmation, and add meaningful checks for the actual interactions. Keep rename/move native dialogs and all existing permissions unchanged. No build performed.
+
+### Inline Folder Creation Event-Ordering & IME Fixes (2026-11-18)
+- **Navigation/tab/refocus vs blur ordering (`src/app/dashboard/DashboardClient.tsx`)**: Added `onMouseDown` cancellation on tab switches (`Shared With Me`, `Trash`, `Admin Mode`), breadcrumbs, and folder cards so cancellation intent is captured before `onBlur` fires. Added `inlineDraftSuppressBlurRef` on `+ New Folder` `onMouseDown` so clicking `+ New Folder` while a draft is open refocuses the existing draft without triggering blur-submit.
+- **IME composition Enter (`src/app/dashboard/DashboardClient.tsx`)**: Added `onCompositionStart`/`onCompositionEnd` (`inlineDraftComposingRef`) and `e.nativeEvent.isComposing || e.keyCode === 229` guard in the inline draft `onKeyDown` handler so IME composition-confirmation `Enter` does not submit, while subsequent ordinary `Enter` submits once.
+- **Verification**:
+  - `pnpm exec tsc --noEmit`: passed (exit 0).
+  - `pnpm test -- --run tests/folders.test.ts`: 8/8 passed (exit 0).
+  - Browser UI automation was not run in this headless worker environment.

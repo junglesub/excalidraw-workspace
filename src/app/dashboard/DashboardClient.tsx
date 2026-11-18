@@ -59,6 +59,8 @@ export default function DashBoardClient({ initialUser }: Props) {
   const inlineDraftInputRef = useRef<HTMLInputElement | null>(null);
   const inlineDraftSubmittingRef = useRef(false);
   const inlineDraftCancelledRef = useRef(false);
+  const inlineDraftSuppressBlurRef = useRef(false);
+  const inlineDraftComposingRef = useRef(false);
   const [moveModal, setMoveModal] = useState<{
     type: "folder" | "document" | "deck";
     id: string;
@@ -242,11 +244,13 @@ export default function DashBoardClient({ initialUser }: Props) {
       setQuery("");
     }
     if (inlineDraft) {
+      inlineDraftSuppressBlurRef.current = false;
       inlineDraftInputRef.current?.focus();
       return;
     }
     inlineDraftCancelledRef.current = false;
     inlineDraftSubmittingRef.current = false;
+    inlineDraftSuppressBlurRef.current = false;
     setInlineDraftName("");
     setInlineDraftError(null);
     setInlineDraft({ parentId: currentFolderId });
@@ -299,6 +303,10 @@ export default function DashBoardClient({ initialUser }: Props) {
   }, [moveModal]);
 
   async function submitInlineDraft(source: "enter" | "blur") {
+    if (source === "blur" && inlineDraftSuppressBlurRef.current) {
+      inlineDraftSuppressBlurRef.current = false;
+      return;
+    }
     if (!inlineDraft || inlineDraftSubmittingRef.current || inlineDraftCancelledRef.current) return;
     const trimmed = inlineDraftName.trim();
     if (!trimmed) {
@@ -475,14 +483,32 @@ export default function DashBoardClient({ initialUser }: Props) {
         <TabButton active={tab === "mine"} onClick={() => setTab("mine")}>
           My Documents
         </TabButton>
-        <TabButton active={tab === "shared"} onClick={() => setTab("shared")}>
+        <TabButton
+          active={tab === "shared"}
+          onMouseDown={() => {
+            if (inlineDraft) cancelInlineDraft();
+          }}
+          onClick={() => setTab("shared")}
+        >
           Shared With Me
         </TabButton>
-        <TabButton active={tab === "trash"} onClick={() => setTab("trash")}>
+        <TabButton
+          active={tab === "trash"}
+          onMouseDown={() => {
+            if (inlineDraft) cancelInlineDraft();
+          }}
+          onClick={() => setTab("trash")}
+        >
           Trash
         </TabButton>
         {isAdmin && (
-          <TabButton active={tab === "admin"} onClick={() => setTab("admin")}>
+          <TabButton
+            active={tab === "admin"}
+            onMouseDown={() => {
+              if (inlineDraft) cancelInlineDraft();
+            }}
+            onClick={() => setTab("admin")}
+          >
             Admin Mode
           </TabButton>
         )}
@@ -523,6 +549,11 @@ export default function DashBoardClient({ initialUser }: Props) {
               />
             </label>
             <button
+              onMouseDown={() => {
+                if (inlineDraft) {
+                  inlineDraftSuppressBlurRef.current = true;
+                }
+              }}
               onClick={startInlineDraft}
               className="px-3 py-1.5 border bg-white rounded text-sm hover:bg-gray-50"
             >
@@ -532,6 +563,9 @@ export default function DashBoardClient({ initialUser }: Props) {
 
           <nav aria-label="Folder breadcrumbs" className="flex items-center gap-1.5 text-sm text-gray-600 mb-4 flex-wrap">
             <button
+              onMouseDown={() => {
+                if (inlineDraft && currentFolderId !== null) cancelInlineDraft();
+              }}
               onClick={() => navigateToFolder(null)}
               className={`hover:underline ${currentFolderId === null ? "font-semibold text-gray-900" : ""}`}
             >
@@ -541,6 +575,9 @@ export default function DashBoardClient({ initialUser }: Props) {
               <span key={crumb.id} className="flex items-center gap-1.5">
                 <span className="text-gray-400">/</span>
                 <button
+                  onMouseDown={() => {
+                    if (inlineDraft && crumb.id !== currentFolderId) cancelInlineDraft();
+                  }}
                   onClick={() => navigateToFolder(crumb.id)}
                   className={`hover:underline ${crumb.id === currentFolderId ? "font-semibold text-gray-900" : ""}`}
                 >
@@ -573,7 +610,16 @@ export default function DashBoardClient({ initialUser }: Props) {
                               setInlineDraftName(e.target.value);
                               if (inlineDraftError) setInlineDraftError(null);
                             }}
+                            onCompositionStart={() => {
+                              inlineDraftComposingRef.current = true;
+                            }}
+                            onCompositionEnd={() => {
+                              inlineDraftComposingRef.current = false;
+                            }}
                             onKeyDown={(e) => {
+                              if (e.nativeEvent.isComposing || e.keyCode === 229 || inlineDraftComposingRef.current) {
+                                return;
+                              }
                               if (e.key === "Enter") {
                                 e.preventDefault();
                                 void submitInlineDraft("enter");
@@ -601,6 +647,9 @@ export default function DashBoardClient({ initialUser }: Props) {
                     {filteredFolders.map((folder) => (
                       <div key={folder.id} className="bg-white border rounded p-4 hover:shadow transition flex flex-col justify-between gap-2">
                         <button
+                          onMouseDown={() => {
+                            if (inlineDraft) cancelInlineDraft();
+                          }}
                           onClick={() => navigateToFolder(folder.id)}
                           className="text-left font-medium truncate hover:text-blue-600"
                         >
@@ -1023,14 +1072,17 @@ export default function DashBoardClient({ initialUser }: Props) {
 function TabButton({
   active,
   onClick,
+  onMouseDown,
   children,
 }: {
   active: boolean;
   onClick: () => void;
+  onMouseDown?: () => void;
   children: React.ReactNode;
 }) {
   return (
     <button
+      onMouseDown={onMouseDown}
       onClick={onClick}
       className={`px-4 py-2 rounded text-sm font-medium ${
         active ? "bg-blue-600 text-white" : "bg-white text-gray-700 border hover:bg-gray-100"
