@@ -1,6 +1,6 @@
 import { handleError, json, readJson, requireUser } from "@/lib/http";
 import { createDocument, listMyDocuments, documentToMeta, getDocumentRaw } from "@/lib/documents";
-import { FolderError } from "@/lib/folders";
+import { FolderError, parseDestinationFolderId } from "@/lib/folders";
 import { jsonToScene, emptyScene } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +23,7 @@ export async function POST(req: Request) {
     if (body.scene && typeof body.scene === "object") {
       scene = jsonToScene(JSON.stringify(body.scene));
     }
-    const folderId = typeof body.folderId === "string" && body.folderId.length > 0 ? body.folderId : null;
+    const folderId = parseDestinationFolderId(body.folderId, { required: false });
     const doc = createDocument(user.id, scene, title, folderId);
     const meta = documentToMeta(getDocumentRaw(doc.id)!, user.id, user.role, false);
     return json({ document: meta }, 201);

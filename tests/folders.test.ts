@@ -5,7 +5,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync } from "node:sqlite";
 import { resetDb, getDb, initializeSchema } from "@/lib/db";
-import { createUser } from "@/lib/users";
+import { createUser, createSession } from "@/lib/users";
 import {
   createDocument,
   documentToMeta,
@@ -194,6 +194,15 @@ describe("Workspace Folders", () => {
       );
     `);
 
+    legacyDb.exec(`
+      INSERT INTO users (id, username, password_hash, role, is_active, created_at, updated_at)
+      VALUES ('u1', 'legacy_user', 'hash', 'USER', 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      INSERT INTO documents (id, title, owner_id, scene, thumbnail_path, created_at, updated_at, deleted_at)
+      VALUES ('d1', 'Legacy Doc', 'u1', '{"elements":[]}', NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL);
+      INSERT INTO decks (id, title, owner_id, aspect_ratio, active_recording_baseline_id, created_at, updated_at)
+      VALUES ('dk1', 'Legacy Deck', 'u1', '16:9', NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    `);
+
     initializeSchema(legacyDb);
     initializeSchema(legacyDb); // repeatable
 
@@ -201,7 +210,71 @@ describe("Workspace Folders", () => {
     const deckCols = legacyDb.prepare("PRAGMA table_info(decks)").all() as { name: string }[];
     expect(docCols.some((c) => c.name === "folder_id")).toBe(true);
     expect(deckCols.some((c) => c.name === "folder_id")).toBe(true);
+    const indexes = legacyDb.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as { name: string }[];
+    expect(indexes.some((i) => i.name === "idx_documents_folder")).toBe(true);
+    expect(indexes.some((i) => i.name === "idx_decks_folder")).toBe(true);
+
+    const legacyDoc = legacyDb.prepare("SELECT owner_id, title, folder_id FROM documents WHERE id = 'd1'").get() as {
+      owner_id: string;
+      title: string;
+      folder_id: string | null;
+    };
+    expect(legacyDoc).toEqual({ owner_id: "u1", title: "Legacy Doc", folder_id: null });
+    const legacyDeck = legacyDb.prepare("SELECT owner_id, title, folder_id FROM decks WHERE id = 'dk1'").get() as {
+      owner_id: string;
+      title: string;
+      folder_id: string | null;
+    };
+    expect(legacyDeck).toEqual({ owner_id: "u1", title: "Legacy Deck", folder_id: null });
     legacyDb.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("enforces strict route validation, atomic folder PATCH, and fresh indexes", async () => {
+    const owner = createUser("route_owner", "password123");
+    const token = createSession(owner.id).token;
+    const parent = createFolder(owner.id, "Parent", null);
+    const child = createFolder(owner.id, "Child", parent.id);
+    const doc = createDocument(owner.id, emptyScene(), "Route Doc", parent.id);
+    const deck = createDeck(owner.id, "Route Deck", "16:9", parent.id);
+
+    const docMove = await import("@/app/api/documents/[id]/move/route");
+    const deckMove = await import("@/app/api/decks/[id]/move/route");
+    const folderRoute = await import("@/app/api/folders/[id]/route");
+    const docCreate = await import("@/app/api/documents/route");
+
+    const req = (body: unknown) =>
+      new Request("http://test.local/api", {
+        method: "PATCH",
+        headers: { cookie: `pew_session=${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const ctx = (id: string) => ({ params: Promise.resolve({ id }) });
+
+    expect((await docMove.PATCH(req({}), ctx(doc.id))).status).toBe(400);
+    expect(getDocumentRaw(doc.id)?.folder_id).toBe(parent.id);
+
+    expect((await deckMove.PATCH(req({ folderId: 42 }), ctx(deck.id))).status).toBe(400);
+    expect(getDeck(deck.id, owner.id, "USER").folderId).toBe(parent.id);
+
+    // Explicit null moves to root
+    expect((await docMove.PATCH(req({ folderId: null }), ctx(doc.id))).status).toBe(200);
+    expect(getDocumentRaw(doc.id)?.folder_id).toBeNull();
+
+    // Atomic folder PATCH: failed move rolls back rename
+    expect((await folderRoute.PATCH(req({ name: "Bad Rename", parentId: child.id }), ctx(parent.id))).status).toBe(400);
+    const parentRow = getDb().prepare("SELECT name FROM folders WHERE id = ?").get(parent.id) as { name: string };
+    expect(parentRow.name).toBe("Parent");
+
+    // Invalid destination on create rejects before creating document
+    const beforeCount = (getDb().prepare("SELECT COUNT(*) as c FROM documents").get() as { c: number }).c;
+    expect((await docCreate.POST(req({ title: "Should Fail", folderId: "nonexistent" }))).status).toBe(404);
+    const afterCount = (getDb().prepare("SELECT COUNT(*) as c FROM documents").get() as { c: number }).c;
+    expect(afterCount).toBe(beforeCount);
+
+    // Fresh database has both folder indexes
+    const indexes = getDb().prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as { name: string }[];
+    expect(indexes.some((i) => i.name === "idx_documents_folder")).toBe(true);
+    expect(indexes.some((i) => i.name === "idx_decks_folder")).toBe(true);
   });
 });

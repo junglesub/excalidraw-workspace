@@ -1,6 +1,6 @@
 import { handleError, json, jsonError, requireUser } from "@/lib/http";
 import { createDocument, documentToMeta, getDocumentRaw } from "@/lib/documents";
-import { FolderError } from "@/lib/folders";
+import { FolderError, parseDestinationFolderId } from "@/lib/folders";
 import { importExcalidrawJson } from "@/lib/exc_io";
 
 /**
@@ -20,8 +20,9 @@ export async function POST(req: Request) {
     const title = form.get("title")
       ? String(form.get("title"))
       : (file.name || "Imported").replace(/\.excalidraw$/i, "").replace(/[^\w.\- ]+/g, "_") || "Imported";
-    const rawFolderId = form.get("folderId");
-    const folderId = typeof rawFolderId === "string" && rawFolderId.length > 0 ? rawFolderId : null;
+    const folderId = form.has("folderId")
+      ? parseDestinationFolderId(form.get("folderId"), { required: false })
+      : null;
     const doc = createDocument(user.id, scene, title, folderId);
     const meta = documentToMeta(getDocumentRaw(doc.id)!, user.id, user.role, false);
     return json({ document: meta }, 201);

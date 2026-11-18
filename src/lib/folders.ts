@@ -13,6 +13,25 @@ export class FolderError extends Error {
 
 export const MAX_FOLDER_NAME_LENGTH = 100;
 
+export function parseDestinationFolderId(
+  value: unknown,
+  { required }: { required: boolean }
+): string | null {
+  if (value === undefined) {
+    if (required) {
+      throw new FolderError("Destination folderId is required", 400);
+    }
+    return null;
+  }
+  if (value === null || value === "") {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new FolderError("Invalid folderId: must be a string or null", 400);
+  }
+  return value;
+}
+
 export function validateFolderName(rawName: unknown): string {
   if (typeof rawName !== "string") {
     throw new FolderError("Folder name is required", 400);
@@ -203,6 +222,27 @@ export function moveFolder(ownerId: string, folderId: string, targetParentId: st
     parent_id: resolvedParentId,
     updated_at: now,
   };
+}
+
+export function updateFolder(
+  ownerId: string,
+  folderId: string,
+  updates: { name?: unknown; parentId?: unknown }
+): FolderMeta {
+  return transaction(() => {
+    let folder: FolderMeta | null = null;
+    if (updates.name !== undefined) {
+      folder = renameFolder(ownerId, folderId, updates.name);
+    }
+    if (updates.parentId !== undefined) {
+      const targetParentId = parseDestinationFolderId(updates.parentId, { required: true });
+      folder = moveFolder(ownerId, folderId, targetParentId);
+    }
+    if (!folder) {
+      throw new FolderError("No valid update fields provided", 400);
+    }
+    return folder;
+  });
 }
 
 export function deleteFolder(ownerId: string, folderId: string): { reparentedTo: string | null } {

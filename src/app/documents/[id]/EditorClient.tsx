@@ -68,6 +68,7 @@ interface Props {
   initialScene: ExcalidrawScene;
   permission: Permission;
   deleted: boolean;
+  initialFolderId?: string | null;
   adminMode?: boolean;
   embedded?: boolean;
   onDocumentSaved?: () => void;
@@ -110,6 +111,7 @@ export default function EditorClient({
   initialScene,
   permission: initialPermission,
   deleted: initialDeleted,
+  initialFolderId = null,
   adminMode: initialAdminMode = false,
   embedded = false,
   onDocumentSaved,
@@ -998,7 +1000,7 @@ export default function EditorClient({
     if (!confirm("Move this document to Trash?")) return;
     try {
       await api(withAdminMode(`/api/documents/${docId}`), { method: "DELETE" });
-      router.push("/dashboard");
+      router.push(initialFolderId ? `/dashboard?folder=${encodeURIComponent(initialFolderId)}` : "/dashboard");
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to delete document");
     }
@@ -1117,7 +1119,7 @@ export default function EditorClient({
       {!embedded && <header className="flex items-center justify-between px-4 py-2.5 bg-white border-b shadow-sm z-10 gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <Link
-            href="/dashboard"
+            href={initialFolderId ? `/dashboard?folder=${encodeURIComponent(initialFolderId)}` : "/dashboard"}
             className="text-gray-600 hover:text-gray-900 text-sm font-medium flex items-center gap-1 shrink-0"
           >
             ← Dashboard

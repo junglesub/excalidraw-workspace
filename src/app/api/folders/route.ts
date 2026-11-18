@@ -5,6 +5,7 @@ import {
   getFolderBreadcrumbs,
   listAllUserFolders,
   listFolders,
+  parseDestinationFolderId,
 } from "@/lib/folders";
 
 export const dynamic = "force-dynamic";
@@ -38,7 +39,7 @@ export async function POST(req: Request) {
   try {
     const user = requireUser(req);
     const body = await readJson(req);
-    const parentId = typeof body.parentId === "string" && body.parentId.length > 0 ? body.parentId : null;
+    const parentId = parseDestinationFolderId(body.parentId, { required: false });
     const folder = createFolder(user.id, body.name, parentId);
     return json({ folder }, 201);
   } catch (err) {

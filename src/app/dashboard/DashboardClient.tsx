@@ -59,6 +59,8 @@ export default function DashBoardClient({ initialUser }: Props) {
     currentFolderId: string | null;
   } | null>(null);
   const [moveTargetId, setMoveTargetId] = useState<string>("");
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [modalSubmitting, setModalSubmitting] = useState(false);
 
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -204,10 +206,24 @@ export default function DashBoardClient({ initialUser }: Props) {
     }
   }
 
+  useEffect(() => {
+    if (!folderModal && !moveModal) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !modalSubmitting) {
+        setFolderModal(null);
+        setMoveModal(null);
+        setModalError(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [folderModal, moveModal, modalSubmitting]);
+
   async function handleFolderSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!folderModal) return;
-    setError(null);
+    if (!folderModal || modalSubmitting) return;
+    setModalError(null);
+    setModalSubmitting(true);
     try {
       if (folderModal.mode === "create") {
         await api("/api/folders", {
@@ -224,7 +240,9 @@ export default function DashBoardClient({ initialUser }: Props) {
       setFolderNameInput("");
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Folder action failed");
+      setModalError(err instanceof Error ? err.message : "Folder action failed");
+    } finally {
+      setModalSubmitting(false);
     }
   }
 
@@ -241,8 +259,9 @@ export default function DashBoardClient({ initialUser }: Props) {
 
   async function handleMoveSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!moveModal) return;
-    setError(null);
+    if (!moveModal || modalSubmitting) return;
+    setModalError(null);
+    setModalSubmitting(true);
     const targetFolderId = moveTargetId === "" ? null : moveTargetId;
     try {
       if (moveModal.type === "folder") {
@@ -264,7 +283,9 @@ export default function DashBoardClient({ initialUser }: Props) {
       setMoveModal(null);
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Move failed");
+      setModalError(err instanceof Error ? err.message : "Move failed");
+    } finally {
+      setModalSubmitting(false);
     }
   }
 
@@ -674,35 +695,57 @@ export default function DashBoardClient({ initialUser }: Props) {
       )}
 
       {folderModal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+        <div
+          className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="folder-modal-title"
+        >
           <div className="bg-white rounded-lg shadow-lg max-w-sm w-full p-5">
-            <h3 className="text-base font-semibold mb-3">
+            <h3 id="folder-modal-title" className="text-base font-semibold mb-3">
               {folderModal.mode === "create" ? "New Folder" : "Rename Folder"}
             </h3>
+            {modalError && (
+              <div role="alert" className="mb-3 rounded bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+                {modalError}
+              </div>
+            )}
             <form onSubmit={handleFolderSubmit} className="space-y-4">
-              <input
-                type="text"
-                value={folderNameInput}
-                onChange={(e) => setFolderNameInput(e.target.value)}
-                placeholder="Folder name"
-                maxLength={100}
-                autoFocus
-                required
-                className="w-full px-3 py-2 border rounded text-sm"
-              />
+              <div>
+                <label htmlFor="folder-name-input" className="block text-xs font-medium text-gray-700 mb-1">
+                  Folder name
+                </label>
+                <input
+                  id="folder-name-input"
+                  type="text"
+                  value={folderNameInput}
+                  onChange={(e) => setFolderNameInput(e.target.value)}
+                  placeholder="Folder name"
+                  maxLength={100}
+                  autoFocus
+                  required
+                  disabled={modalSubmitting}
+                  className="w-full px-3 py-2 border rounded text-sm"
+                />
+              </div>
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setFolderModal(null)}
-                  className="px-3 py-1.5 border rounded text-sm hover:bg-gray-50"
+                  disabled={modalSubmitting}
+                  onClick={() => {
+                    setFolderModal(null);
+                    setModalError(null);
+                  }}
+                  className="px-3 py-1.5 border rounded text-sm hover:bg-gray-50 disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                  disabled={modalSubmitting}
+                  className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {folderModal.mode === "create" ? "Create" : "Save"}
+                  {modalSubmitting ? "Saving..." : folderModal.mode === "create" ? "Create" : "Save"}
                 </button>
               </div>
             </form>
@@ -710,45 +753,109 @@ export default function DashBoardClient({ initialUser }: Props) {
         </div>
       )}
 
-      {moveModal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-lg max-w-sm w-full p-5">
-            <h3 className="text-base font-semibold mb-1">Move &ldquo;{moveModal.title}&rdquo;</h3>
-            <p className="text-xs text-gray-500 mb-3">Select destination folder</p>
-            <form onSubmit={handleMoveSubmit} className="space-y-4">
-              <select
-                value={moveTargetId}
-                onChange={(e) => setMoveTargetId(e.target.value)}
-                className="w-full px-3 py-2 border rounded text-sm bg-white"
-              >
-                <option value="">My Documents (Root)</option>
-                {allFolders
-                  .filter((f) => moveModal.type !== "folder" || f.id !== moveModal.id)
-                  .map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.name}
-                    </option>
-                  ))}
-              </select>
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMoveModal(null)}
-                  className="px-3 py-1.5 border rounded text-sm hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
-                >
-                  Move
-                </button>
-              </div>
-            </form>
+      {moveModal && (() => {
+        const byId = new Map(allFolders.map((f) => [f.id, f]));
+        const excluded = new Set<string>();
+        if (moveModal.type === "folder") {
+          excluded.add(moveModal.id);
+          let added = true;
+          while (added) {
+            added = false;
+            for (const f of allFolders) {
+              if (!excluded.has(f.id) && f.parent_id && excluded.has(f.parent_id)) {
+                excluded.add(f.id);
+                added = true;
+              }
+            }
+          }
+        }
+        const pathCounts = new Map<string, number>();
+        const rawOptions = allFolders
+          .filter((f) => !excluded.has(f.id))
+          .map((f) => {
+            const parts: string[] = [];
+            let cur: FolderMeta | undefined = f;
+            const seen = new Set<string>();
+            while (cur && !seen.has(cur.id)) {
+              seen.add(cur.id);
+              parts.unshift(cur.name);
+              cur = cur.parent_id ? byId.get(cur.parent_id) : undefined;
+            }
+            const basePath = parts.join(" / ");
+            pathCounts.set(basePath, (pathCounts.get(basePath) ?? 0) + 1);
+            return { id: f.id, basePath };
+          });
+        const seenCounts = new Map<string, number>();
+        const moveOptions = rawOptions.map((opt) => {
+          const total = pathCounts.get(opt.basePath) ?? 1;
+          if (total <= 1) return { id: opt.id, label: opt.basePath };
+          const idx = (seenCounts.get(opt.basePath) ?? 0) + 1;
+          seenCounts.set(opt.basePath, idx);
+          return { id: opt.id, label: `${opt.basePath} (${idx})` };
+        });
+
+        return (
+          <div
+            className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="move-modal-title"
+          >
+            <div className="bg-white rounded-lg shadow-lg max-w-sm w-full p-5">
+              <h3 id="move-modal-title" className="text-base font-semibold mb-1">
+                Move &ldquo;{moveModal.title}&rdquo;
+              </h3>
+              <p className="text-xs text-gray-500 mb-3">Select destination folder</p>
+              {modalError && (
+                <div role="alert" className="mb-3 rounded bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+                  {modalError}
+                </div>
+              )}
+              <form onSubmit={handleMoveSubmit} className="space-y-4">
+                <div>
+                  <label htmlFor="move-destination-select" className="block text-xs font-medium text-gray-700 mb-1">
+                    Destination folder
+                  </label>
+                  <select
+                    id="move-destination-select"
+                    value={moveTargetId}
+                    onChange={(e) => setMoveTargetId(e.target.value)}
+                    disabled={modalSubmitting}
+                    className="w-full px-3 py-2 border rounded text-sm bg-white"
+                  >
+                    <option value="">My Documents (Root)</option>
+                    {moveOptions.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={modalSubmitting}
+                    onClick={() => {
+                      setMoveModal(null);
+                      setModalError(null);
+                    }}
+                    className="px-3 py-1.5 border rounded text-sm hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={modalSubmitting}
+                    className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {modalSubmitting ? "Moving..." : "Move"}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       <footer className="mt-12 pt-6 border-t border-gray-200 flex flex-col sm:flex-row items-center justify-between text-xs text-gray-400 gap-2">
         <div className="flex items-center gap-2">
