@@ -269,3 +269,15 @@ Correction scope: distinguish navigation/repeated-New-Folder intent before blur,
   - `pnpm exec tsc --noEmit`: passed (exit 0).
   - `pnpm test -- --run tests/folders.test.ts`: 8/8 passed (exit 0).
   - Browser UI automation was not run in this headless worker environment.
+
+### Final independent inline creation review — r_96162ba55e07 / 0650285
+
+**GO for the requested inline New Folder interaction.** Coordinator independently reviewed the code changes and reproduced the previously failing desktop browser interactions on an owned `next dev` server with a fresh temporary DATA_DIR, using authenticated folder API reads to verify persistence:
+
+- New Folder in an empty workspace displays the inline input in the folder grid, with no creation dialog.
+- Enter `CancelOnNavigation`, then physically click Shared With Me: draft disappears and saved folder count remains **0**, correcting the previous blur-before-cancel failure.
+- Fill a draft with `한글조합검증`, then dispatch a composing Enter (`isComposing: true`, `keyCode: 229`): draft remains editable and saved folder count remains **0**. This is a browser event reproduction, not an OS-level Korean IME certification.
+- Click New Folder again with the draft populated: the same value remains, the input is focused, and saved folder count remains **0**.
+- Press ordinary Enter after the composing-event check: draft disappears and authenticated API returns exactly **1** folder with that name. Server output records one successful creation POST.
+
+Worker evidence: `pnpm exec tsc --noEmit` exited 0 and the 8 existing domain/API folder tests passed; coordinator did not rerun those checks. The prior revision's focused Escape cancellation check is retained as historical evidence. Touch input, every browser/OS IME, background-request failures, and the entire folder lifecycle were not independently browser-tested in this final pass. The review tab and owned server were closed/stopped. No build, merge, push, or deployment was performed; work remains on `feat/inline-folder-creation`.

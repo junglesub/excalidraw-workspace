@@ -343,4 +343,7 @@ Coordinator decision: GO after review of `04b23ca`. See [final review and eviden
 - [x] Synchronous `inlineDraftSubmittingRef` and `inlineDraftCancelledRef` guard against Enter+blur double submission and cancelled-draft saves
 - [x] Rename and Move native `<dialog>` modals preserved unchanged
 - [x] TypeScript check (`pnpm exec tsc --noEmit`) and `tests/folders.test.ts` (8/8 passed)
-- [ ] Interactive browser UI QA approval: coordinator observed inline rendering and Escape cancellation, but navigation blur saves unexpectedly and composing Enter submits (`595e9db`); fixes required, see TODO_FOLLOWUP.md
+- [x] Focused independent browser QA on `0650285`: empty-workspace inline input, physical tab-click cancellation (0 saved), composing Enter event (0 saved), repeated New Folder refocus (0 saved), ordinary Enter (exactly 1 saved). See final inline review in TODO_FOLLOWUP.md.
+- [ ] Broader touch/OS-level IME, failed-request recovery, and full lifecycle browser coverage (not implied by focused checks)
+
+Coordinator decision: GO for requested inline creation after code review and focused browser verification of `0650285`. No production build, merge, push, or deployment performed.

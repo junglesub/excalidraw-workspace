@@ -18,6 +18,8 @@ The user confirmed the feature scope. The recommended approach and defaults belo
 
 ### Follow-up: inline New Folder creation
 
+Status: implemented at `0650285` and independently approved after focused desktop browser verification. Full evidence and coverage limits are recorded in `docs/project/TODO_FOLLOWUP.md` under the final independent inline creation review.
+
 Requested after the initial feature review: clicking New Folder should insert a draft folder card in the current folder grid and edit its name there, rather than opening a creation dialog. Show and focus the inline name field even in empty or search-filtered folders. Enter or a nonempty blur saves; Escape cancels without creating a server record. Blank blur cancels, while an invalid submitted name or failed request shows a local error and permits retry. Prevent duplicate blur/Enter submissions and capture the intended parent folder. Existing folder rename and Move dialogs retain their current behavior. This follow-up supersedes the creation-dialog interaction only. Implementation is delegated to the newly opened Antigravity terminal; Codex independently verifies it. No production build is authorized.
 
 - My Documents shows immediate child folders, Decks, and documents; breadcrumbs navigate ancestors. Keep the existing tabs and card styles.
