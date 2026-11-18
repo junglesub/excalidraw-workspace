@@ -4,7 +4,7 @@
 
 - Requested: nested application folders containing documents and presentation Decks, including moving existing items.
 - Design: [Workspace folders](../superpowers/specs/2026-11-18-workspace-folders-design.md).
-- Status: Antigravity implementation received (`r_ceea00088273`); coordinator independent review is **NO-GO**, corrections required. Work is on `feat/workspace-folders`. No build performed.
+- Current status: **GO after independent review of final correction `04b23ca`**, on `feat/workspace-folders`. No production build, merge, push, or deployment performed. The following initial findings and correction records are retained as history; see the final decision below for current verification limits.
 - Worker evidence: 7 folder tests and TypeScript checking passed; full-suite baseline was recorded before implementation, not after it. Browser UI QA was not performed.
 - Independent coordinator verification: `pnpm exec vitest run --exclude tests/folders.test.ts` passed all **325 tests in 39 files** after implementation; `git diff --check` passed. No worker-specific tests or typecheck were rerun.
 - Isolated API verification: `pnpm exec tsx .my-orch/verify-workspace-folders.ts` produced 3 passing checks and 4 failing checks. Cross-owner move rejection and current-folder document creation/import passed. Missing document move destination and numeric Deck move destination returned 200 and moved items to root; a cyclic combined folder rename/move returned 400 but retained the new name; a fresh database lacked the documented document/Deck folder indexes. Local evidence: `.my-orch/folder-independent-review.json` (ignored runtime artifact).
@@ -237,3 +237,11 @@ Integration verification: the source branch was committed as `b6c0879` after all
   - `pnpm exec tsx .my-orch/verify-deck-folder-privacy.ts`: passed (`getFolderId: null`, `reorderStatus: 200`, `reorderFolderId: null`, `passed: true`).
   - `pnpm test -- --run tests/folders.test.ts`: 8/8 passed (including non-owner admin `POST /api/decks/[id]/pages/reorder` and `DELETE /api/decks/[id]/pages/[pageId]` regressions).
   - `pnpm exec tsc --noEmit`: passed (exit 0).
+
+### Final coordinator decision — r_5c27ae24c169 / 04b23ca
+
+**GO for the documented personal nested folder feature.** Coordinator independently read the final diff, every `toDeck` call, affected HTTP routes, and regression assertions. Viewer identity is now mandatory in the shared conversion, and all create/read/mutation paths pass it. Authenticated non-owner admin reorder/delete regressions check null folder metadata while the owner's location remains intact. The earlier API validation, transactional rollback, schema-index, editor-navigation, destination-label, and dialog findings are resolved across the recorded correction commits.
+
+Final worker evidence: `pnpm exec tsx .my-orch/verify-deck-folder-privacy.ts` passed with a null folder identifier in both read and reorder responses; 8 folder tests passed; `pnpm exec tsc --noEmit` exited 0. Coordinator inspected the actual artifact and code without rerunning the worker's checks. The 325 existing regression tests passed in the earlier post-implementation verification; that is not a claim that the complete suite was rerun after the final privacy patch.
+
+Independent coordinator browser coverage includes dashboard folder creation and focused native New Folder/Move modal behavior, initial focus, background exclusion, and Escape focus restoration on an isolated dev server. Full move/delete/import/editor-return browser lifecycle coverage remains unexecuted; those paths were reviewed statically and have the recorded domain/API tests. No production build, merge, push, or deployment was performed. Product and test code was implemented by Antigravity; coordinator changes were confined to review artifacts/documentation and Git checkpoints. Workspace remains on `feat/workspace-folders`.

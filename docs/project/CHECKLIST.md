@@ -329,4 +329,8 @@ GO for the documented standalone single-line URL canvas feature after static rev
 - [x] Cross-owner transfer clears `folder_id` and non-owner meta hides `folder_id` (`tests/folders.test.ts`)
 - [x] Idempotent migration on legacy database (`tests/folders.test.ts`)
 - [x] TypeScript check (`pnpm exec tsc --noEmit`)
-- [ ] Interactive browser UI QA (not run in this headless worker environment)
+- [x] Non-owner admin Deck reorder/delete HTTP responses hide folder metadata; owner location remains intact (`04b23ca`, worker tests and independent static review)
+- [x] Focused coordinator browser QA: folder creation, native New Folder/Move dialogs, initial focus, background exclusion, Escape and trigger restoration (isolated dev server)
+- [ ] Full interactive move/delete/import/editor-return lifecycle QA (not executed; focused UI checks above do not imply full coverage)
+
+Coordinator decision: GO after review of `04b23ca`. See [final review and evidence limits](TODO_FOLLOWUP.md#final-coordinator-decision--r_5c27ae24c169--04b23ca). No production build, merge, push, or deployment performed.

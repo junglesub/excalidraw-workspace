@@ -1,6 +1,6 @@
 # Workspace folders
 
-Status: Implemented (pending independent review).
+Status: Implemented and independently reviewed (GO, 2026-11-18). See `docs/project/TODO_FOLLOWUP.md` for the final decision, evidence attribution, and limited browser coverage.
 
 ## Confirmed scope
 
