@@ -276,5 +276,12 @@ describe("Workspace Folders", () => {
     const indexes = getDb().prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as { name: string }[];
     expect(indexes.some((i) => i.name === "idx_documents_folder")).toBe(true);
     expect(indexes.some((i) => i.name === "idx_decks_folder")).toBe(true);
+
+    // Non-owner admin does not receive owner's private folderId on getDeck
+    const admin = createUser("deck_admin", "password123", "ADMIN");
+    const ownerDeck = getDeck(deck.id, owner.id, "USER");
+    expect(ownerDeck.folderId).toBe(parent.id);
+    const adminDeck = getDeck(deck.id, admin.id, "ADMIN");
+    expect(adminDeck.folderId).toBeNull();
   });
 });

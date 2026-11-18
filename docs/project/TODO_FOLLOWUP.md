@@ -213,3 +213,13 @@ Integration verification: the source branch was committed as `b6c0879` after all
 - **Editor return navigation**: `src/app/documents/[id]/page.tsx`, `src/app/documents/[id]/EditorClient.tsx`, and `src/app/decks/[id]/DeckEditorClient.tsx` now preserve `folder_id`/`folderId` when returning to `/dashboard?folder=...` for the owner.
 - **Dashboard move & dialog UX**: `src/app/dashboard/DashboardClient.tsx` now renders full ancestor paths with duplicate-name suffixes, excludes self/descendants when moving folders, displays errors inside the active modal, and adds dialog/label/Escape/pending-submit guards.
 - **Verification**: `pnpm exec tsx .my-orch/verify-workspace-folders.ts` (7/7 passed), `pnpm test -- --run tests/folders.test.ts` (8/8 passed), `pnpm exec tsc --noEmit` (passed), and `pnpm exec vitest run --exclude tests/folders.test.ts` (39 files, 325 tests passed). Browser UI QA not run in this headless worker environment.
+
+### Workspace Folders Dialog Focus & Deck Visibility Evidence (2026-11-18)
+- **Native `<dialog>` modal focus management (`src/app/dashboard/DashboardClient.tsx`)**: Replaced `<div role="dialog">` with native `<dialog>` + `showModal()` for both `folderModal` and `moveModal`, providing top-layer background inertness, built-in `Tab`/`Shift+Tab` focus containment, initial focus on `folder-name-input` and `move-destination-select`, and focus restoration to the invoking control on close/cancel/`Escape`.
+- **Owner-scoped Deck `folderId` (`src/lib/decks.ts`)**: `toDeck(row, viewerId)` now returns `folderId: null` when `viewerId !== row.owner_id`, preventing non-owner admins from receiving private folder metadata in `getDeck`.
+- **Verification**:
+  - `pnpm test -- --run tests/folders.test.ts`: 8/8 passed (including non-owner admin `getDeck` `folderId === null` regression).
+  - `pnpm exec tsc --noEmit`: passed (exit 0).
+  - `pnpm exec tsx .my-orch/verify-workspace-folders.ts`: 7/7 passed.
+  - Reconciled prior run: `pnpm exec vitest run --exclude tests/folders.test.ts` completed with 39 files, 325 tests passed.
+  - Browser UI automation was not run in this headless worker environment; native `<dialog>.showModal()` focus behavior is verified by inspection and TypeScript check.

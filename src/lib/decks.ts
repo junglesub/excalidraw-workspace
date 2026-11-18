@@ -46,12 +46,12 @@ function toPage(row: DeckPageRow): DeckPage {
   };
 }
 
-function toDeck(row: DeckRow): DeckWithPages {
+function toDeck(row: DeckRow, viewerId?: string): DeckWithPages {
   return {
     id: row.id,
     title: row.title,
     ownerId: row.owner_id,
-    folderId: row.folder_id ?? null,
+    folderId: viewerId === undefined || row.owner_id === viewerId ? (row.folder_id ?? null) : null,
     aspectRatio: row.aspect_ratio,
     ...(row.active_recording_baseline_id
       ? { activeRecordingBaselineId: row.active_recording_baseline_id }
@@ -103,11 +103,11 @@ export function listDecks(userId: string): DeckWithPages[] {
   const rows = getDb()
     .prepare("SELECT * FROM decks WHERE owner_id = ? ORDER BY updated_at DESC")
     .all(userId) as DeckRow[];
-  return rows.map(toDeck);
+  return rows.map((row) => toDeck(row, userId));
 }
 
 export function getDeck(deckId: string, userId: string, role: "USER" | "ADMIN"): DeckWithPages {
-  return toDeck(requireDeck(deckId, userId, role));
+  return toDeck(requireDeck(deckId, userId, role), userId);
 }
 
 export function renameDeck(
