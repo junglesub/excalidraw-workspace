@@ -343,4 +343,4 @@ Coordinator decision: GO after review of `04b23ca`. See [final review and eviden
 - [x] Synchronous `inlineDraftSubmittingRef` and `inlineDraftCancelledRef` guard against Enter+blur double submission and cancelled-draft saves
 - [x] Rename and Move native `<dialog>` modals preserved unchanged
 - [x] TypeScript check (`pnpm exec tsc --noEmit`) and `tests/folders.test.ts` (8/8 passed)
-- [ ] Interactive browser UI QA (not run in this headless worker environment)
+- [ ] Interactive browser UI QA approval: coordinator observed inline rendering and Escape cancellation, but navigation blur saves unexpectedly and composing Enter submits (`595e9db`); fixes required, see TODO_FOLLOWUP.md

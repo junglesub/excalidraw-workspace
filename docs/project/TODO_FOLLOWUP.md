@@ -252,3 +252,12 @@ Independent coordinator browser coverage includes dashboard folder creation and 
   - `pnpm exec tsc --noEmit`: passed (exit 0).
   - `pnpm test -- --run tests/folders.test.ts`: 8/8 passed (exit 0).
   - Interactive browser UI QA was not run in this headless worker environment.
+
+### Independent inline creation review — r_d36f0c6fb484 / 595e9db
+
+**NO-GO pending two event-handling fixes.** Coordinator read the actual diff and independently used an owned loopback `next dev` server with a fresh temporary DATA_DIR. New Folder visibly inserts a focused draft in the folder grid without a dialog; Escape removes the draft without an additional saved record. Review tab and server were closed/stopped. Worker reports typecheck and 8 existing folder tests passed; those existing domain/API tests do not exercise the new browser handlers and coordinator did not rerun them.
+
+1. Real click reproduction: click New Folder, enter `CancelOnNavigation`, click Shared With Me, then read authenticated `GET /api/folders?all=1`. The draft disappears, but the folder name is present on the server. Input blur submits before the tab-change effect cancels the draft. This contradicts the navigation cancellation behavior recorded in the plan/checklist.
+2. Browser-dispatched event reproduction (not an OS-level IME typing test): fill the draft with `한글조합검증`, dispatch a bubbling/cancellable keydown with `key: 'Enter'`, `isComposing: true`, `keyCode: 229`. The event is prevented and a folder is persisted. The handler treats composition confirmation as submission. Ignore composing Enter events and their relevant browser fallback before submitting.
+
+Correction scope: distinguish navigation/repeated-New-Folder intent before blur, retain ordinary nonempty blur submission, guard composition confirmation, and add meaningful checks for the actual interactions. Keep rename/move native dialogs and all existing permissions unchanged. No build performed.
