@@ -14,7 +14,7 @@ import {
   softDelete,
   transferOwnership,
 } from "@/lib/documents";
-import { createDeck, getDeck } from "@/lib/decks";
+import { createDeck, createBlankPage, getDeck } from "@/lib/decks";
 import {
   createFolder,
   deleteFolder,
@@ -277,11 +277,42 @@ describe("Workspace Folders", () => {
     expect(indexes.some((i) => i.name === "idx_documents_folder")).toBe(true);
     expect(indexes.some((i) => i.name === "idx_decks_folder")).toBe(true);
 
-    // Non-owner admin does not receive owner's private folderId on getDeck
+    // Non-owner admin does not receive owner's private folderId on getDeck or Deck mutation routes
     const admin = createUser("deck_admin", "password123", "ADMIN");
+    const adminToken = createSession(admin.id).token;
     const ownerDeck = getDeck(deck.id, owner.id, "USER");
     expect(ownerDeck.folderId).toBe(parent.id);
     const adminDeck = getDeck(deck.id, admin.id, "ADMIN");
     expect(adminDeck.folderId).toBeNull();
+
+    const page2 = createBlankPage(deck.id, owner.id, "USER");
+    const reorderRoute = await import("@/app/api/decks/[id]/pages/reorder/route");
+    const pageDeleteRoute = await import("@/app/api/decks/[id]/pages/[pageId]/route");
+
+    const reorderRes = await reorderRoute.POST(
+      new Request("http://test.local/api", {
+        method: "POST",
+        headers: { cookie: `pew_session=${adminToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ pageIds: [page2.id, ownerDeck.pages[0].id] }),
+      }),
+      { params: Promise.resolve({ id: deck.id }) },
+    );
+    expect(reorderRes.status).toBe(200);
+    const reorderBody = (await reorderRes.json()) as { deck: { folderId: string | null } };
+    expect(reorderBody.deck.folderId).toBeNull();
+
+    const delRes = await pageDeleteRoute.DELETE(
+      new Request("http://test.local/api", {
+        method: "DELETE",
+        headers: { cookie: `pew_session=${adminToken}` },
+      }),
+      { params: Promise.resolve({ id: deck.id, pageId: page2.id }) },
+    );
+    expect(delRes.status).toBe(200);
+    const delBody = (await delRes.json()) as { deck: { folderId: string | null } };
+    expect(delBody.deck.folderId).toBeNull();
+
+    // Owner's folderId is preserved
+    expect(getDeck(deck.id, owner.id, "USER").folderId).toBe(parent.id);
   });
 });

@@ -46,12 +46,12 @@ function toPage(row: DeckPageRow): DeckPage {
   };
 }
 
-function toDeck(row: DeckRow, viewerId?: string): DeckWithPages {
+function toDeck(row: DeckRow, viewerId: string): DeckWithPages {
   return {
     id: row.id,
     title: row.title,
     ownerId: row.owner_id,
-    folderId: viewerId === undefined || row.owner_id === viewerId ? (row.folder_id ?? null) : null,
+    folderId: row.owner_id === viewerId ? (row.folder_id ?? null) : null,
     aspectRatio: row.aspect_ratio,
     ...(row.active_recording_baseline_id
       ? { activeRecordingBaselineId: row.active_recording_baseline_id }
@@ -95,7 +95,7 @@ export function createDeck(
       .run(id, title.trim() || "Untitled Deck", ownerId, resolvedFolderId, aspectRatio, now, now);
     const doc = createDocument(ownerId, emptyScene(), "Page 1");
     insertPage(id, doc.id, "Page 1", 0);
-    return toDeck(rawDeck(id)!);
+    return toDeck(rawDeck(id)!, ownerId);
   });
 }
 
@@ -120,7 +120,7 @@ export function renameDeck(
   const clean = title.trim();
   if (!clean) throw new HttpError(400, "Deck title is required");
   getDb().prepare("UPDATE decks SET title = ?, updated_at = ? WHERE id = ?").run(clean, nowIso(), deckId);
-  return toDeck(rawDeck(deckId)!);
+  return toDeck(rawDeck(deckId)!, userId);
 }
 
 export function setDeckAspectRatio(
@@ -134,7 +134,7 @@ export function setDeckAspectRatio(
   getDb()
     .prepare("UPDATE decks SET aspect_ratio = ?, updated_at = ? WHERE id = ?")
     .run(aspectRatio, nowIso(), deckId);
-  return toDeck(rawDeck(deckId)!);
+  return toDeck(rawDeck(deckId)!, userId);
 }
 
 export function createBlankPage(
@@ -219,7 +219,7 @@ export function deletePage(
   normalizeOrders(deckId);
   permanentDelete(page.document_id, userId, role, role === "ADMIN");
   getDb().prepare("UPDATE decks SET updated_at = ? WHERE id = ?").run(nowIso(), deckId);
-  return toDeck(rawDeck(deckId)!);
+  return toDeck(rawDeck(deckId)!, userId);
 }
 
 export function reorderPages(
@@ -246,7 +246,7 @@ export function reorderPages(
     });
     getDb().prepare("UPDATE decks SET updated_at = ? WHERE id = ?").run(nowIso(), deckId);
   });
-  return toDeck(rawDeck(deckId)!);
+  return toDeck(rawDeck(deckId)!, userId);
 }
 
 export function deleteDeck(
