@@ -10,6 +10,8 @@
 - Isolated API verification: `pnpm exec tsx .my-orch/verify-workspace-folders.ts` produced 3 passing checks and 4 failing checks. Cross-owner move rejection and current-folder document creation/import passed. Missing document move destination and numeric Deck move destination returned 200 and moved items to root; a cyclic combined folder rename/move returned 400 but retained the new name; a fresh database lacked the documented document/Deck folder indexes. Local evidence: `.my-orch/folder-independent-review.json` (ignored runtime artifact).
 - Static findings: document and Deck editor Dashboard links still point to root; destination selector renders only folder names, making `Project A/Assets` and `Project B/Assets` indistinguishable. Mutation errors render behind the open modal; newly added dialogs also lack accessible labels/dialog semantics and pending guards.
 - Next: delegate focused corrections and regression coverage to Antigravity, then independently review. Checkpoint commits record progress and do not imply feature approval.
+- Initial checkpoint: `1573f3f` on `feat/workspace-folders`; working tree was clean after the commit. Correction task is staged locally in `.my-orch/task-antigravity-workspace-folders-fixes.md`.
+- Correction dispatch did not start: named Antigravity dispatch returned `worker_not_found` (no current-worktree binding or unique matching identity). Compact terminal discovery reports the prior terminal as connected/writable, but named dispatch cannot authenticate its worker identity. Do not guess another provider or silently implement corrections; an Antigravity terminal selection/reopen is required.
 
 ## 1. Summary of Verification Results
 
