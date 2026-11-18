@@ -1,0 +1,207 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createRequire } from "node:module";
+import type { DatabaseSync } from "node:sqlite";
+import { resetDb, getDb, initializeSchema } from "@/lib/db";
+import { createUser } from "@/lib/users";
+import {
+  createDocument,
+  documentToMeta,
+  getDocumentRaw,
+  restoreDocument,
+  softDelete,
+  transferOwnership,
+} from "@/lib/documents";
+import { createDeck, getDeck } from "@/lib/decks";
+import {
+  createFolder,
+  deleteFolder,
+  FolderError,
+  getFolderBreadcrumbs,
+  listAllUserFolders,
+  listFolders,
+  moveDeckToFolder,
+  moveDocumentToFolder,
+  moveFolder,
+  renameFolder,
+} from "@/lib/folders";
+import { emptyScene } from "@/lib/types";
+
+const nodeRequire = createRequire(import.meta.url);
+const { DatabaseSync: NodeDatabaseSync } = nodeRequire("node:sqlite") as {
+  DatabaseSync: typeof DatabaseSync;
+};
+
+describe("Workspace Folders", () => {
+  beforeEach(() => {
+    resetDb();
+  });
+
+  it("creates nested folders, validates names, and allows duplicate names", () => {
+    const alice = createUser("alice", "password123");
+
+    expect(() => createFolder(alice.id, "   ")).toThrow(FolderError);
+    expect(() => createFolder(alice.id, "a".repeat(101))).toThrow(FolderError);
+
+    const root1 = createFolder(alice.id, "  Projects  ", null);
+    const root2 = createFolder(alice.id, "Projects", null);
+    expect(root1.name).toBe("Projects");
+    expect(root2.name).toBe("Projects");
+    expect(root1.id).not.toBe(root2.id);
+
+    const child = createFolder(alice.id, "2026", root1.id);
+    const grandchild = createFolder(alice.id, "Q4", child.id);
+
+    expect(listFolders(alice.id, null).map((f) => f.id)).toContain(root1.id);
+    expect(listFolders(alice.id, root1.id).map((f) => f.id)).toEqual([child.id]);
+    expect(getFolderBreadcrumbs(alice.id, grandchild.id).map((f) => f.name)).toEqual([
+      "Projects",
+      "2026",
+      "Q4",
+    ]);
+
+    const renamed = renameFolder(alice.id, grandchild.id, "  Q4 Final  ");
+    expect(renamed.name).toBe("Q4 Final");
+  });
+
+  it("moves folders, documents, and decks, and rejects cycles", () => {
+    const alice = createUser("alice", "password123");
+    const f1 = createFolder(alice.id, "F1", null);
+    const f2 = createFolder(alice.id, "F2", f1.id);
+    const f3 = createFolder(alice.id, "F3", f2.id);
+
+    expect(() => moveFolder(alice.id, f1.id, f1.id)).toThrow("itself");
+    expect(() => moveFolder(alice.id, f1.id, f3.id)).toThrow("descendant");
+
+    const moved = moveFolder(alice.id, f3.id, null);
+    expect(moved.parent_id).toBeNull();
+
+    const doc = createDocument(alice.id, emptyScene(), "Doc 1", f1.id);
+    expect(doc.folder_id).toBe(f1.id);
+    moveDocumentToFolder(alice.id, doc.id, f2.id);
+    expect(getDocumentRaw(doc.id)?.folder_id).toBe(f2.id);
+
+    const deck = createDeck(alice.id, "Deck 1", "16:9", f1.id);
+    expect(deck.folderId).toBe(f1.id);
+    moveDeckToFolder(alice.id, deck.id, null);
+    expect(getDeck(deck.id, alice.id, "USER").folderId).toBeNull();
+  });
+
+  it("enforces cross-user isolation", () => {
+    const alice = createUser("alice", "password123");
+    const bob = createUser("bob", "password123");
+
+    const aliceFolder = createFolder(alice.id, "Alice Secret", null);
+    const bobDoc = createDocument(bob.id, emptyScene(), "Bob Doc", null);
+
+    expect(listAllUserFolders(bob.id)).toEqual([]);
+    expect(() => renameFolder(bob.id, aliceFolder.id, "Hacked")).toThrow(FolderError);
+    expect(() => deleteFolder(bob.id, aliceFolder.id)).toThrow(FolderError);
+    expect(() => createFolder(bob.id, "Sub", aliceFolder.id)).toThrow(FolderError);
+    expect(() => createDocument(bob.id, emptyScene(), "Bad", aliceFolder.id)).toThrow(FolderError);
+    expect(() => createDeck(bob.id, "Bad Deck", "16:9", aliceFolder.id)).toThrow(FolderError);
+    expect(() => moveDocumentToFolder(bob.id, bobDoc.id, aliceFolder.id)).toThrow(FolderError);
+    expect(() => moveDocumentToFolder(alice.id, bobDoc.id, aliceFolder.id)).toThrow(FolderError);
+  });
+
+  it("deletes populated folder without content loss and reparents trashed docs", () => {
+    const alice = createUser("alice", "password123");
+    const parent = createFolder(alice.id, "Parent", null);
+    const target = createFolder(alice.id, "Target", parent.id);
+    const childFolder = createFolder(alice.id, "Child", target.id);
+    const doc = createDocument(alice.id, emptyScene(), "Active Doc", target.id);
+    const trashedDoc = createDocument(alice.id, emptyScene(), "Trashed Doc", target.id);
+    softDelete(trashedDoc.id, alice.id, "USER");
+    const deck = createDeck(alice.id, "Deck", "16:9", target.id);
+
+    const res = deleteFolder(alice.id, target.id);
+    expect(res.reparentedTo).toBe(parent.id);
+
+    expect(listFolders(alice.id, parent.id).map((f) => f.id)).toEqual([childFolder.id]);
+    expect(getDocumentRaw(doc.id)?.folder_id).toBe(parent.id);
+    expect(getDocumentRaw(trashedDoc.id)?.folder_id).toBe(parent.id);
+    expect(getDeck(deck.id, alice.id, "USER").folderId).toBe(parent.id);
+
+    restoreDocument(trashedDoc.id, alice.id, "USER");
+    expect(getDocumentRaw(trashedDoc.id)?.folder_id).toBe(parent.id);
+  });
+
+  it("rejects moving Deck backing documents independently", () => {
+    const alice = createUser("alice", "password123");
+    const folder = createFolder(alice.id, "F", null);
+    const deck = createDeck(alice.id, "Deck", "16:9", null);
+    const backingDocId = deck.pages[0].documentId;
+
+    expect(() => moveDocumentToFolder(alice.id, backingDocId, folder.id)).toThrow(
+      "Deck page backing documents cannot be moved independently",
+    );
+  });
+
+  it("clears folder_id on cross-owner transfer and hides folder_id from non-owners", () => {
+    const alice = createUser("alice", "password123");
+    const bob = createUser("bob", "password123");
+    const folder = createFolder(alice.id, "Private", null);
+    const doc = createDocument(alice.id, emptyScene(), "Shared Doc", folder.id);
+
+    // Same-owner transfer retains folder_id
+    const sameOwner = transferOwnership(doc.id, alice.id, alice.id, "USER");
+    expect(sameOwner.folder_id).toBe(folder.id);
+
+    // Non-owner viewer meta hides folder_id
+    const bobMeta = documentToMeta(sameOwner, bob.id, "USER", false);
+    expect(bobMeta.folder_id).toBeNull();
+
+    // Cross-owner transfer clears folder_id
+    const transferred = transferOwnership(doc.id, bob.id, alice.id, "USER");
+    expect(transferred.owner_id).toBe(bob.id);
+    expect(transferred.folder_id).toBeNull();
+  });
+
+  it("runs idempotent migration on a legacy database without folders", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "excalidraw-folder-mig-"));
+    const dbFile = path.join(tmpDir, "legacy.db");
+    const legacyDb = new NodeDatabaseSync(dbFile);
+    legacyDb.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'USER',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE documents (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        scene TEXT NOT NULL DEFAULT '{}',
+        thumbnail_path TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+      );
+      CREATE TABLE decks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        aspect_ratio TEXT NOT NULL,
+        active_recording_baseline_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+
+    initializeSchema(legacyDb);
+    initializeSchema(legacyDb); // repeatable
+
+    const docCols = legacyDb.prepare("PRAGMA table_info(documents)").all() as { name: string }[];
+    const deckCols = legacyDb.prepare("PRAGMA table_info(decks)").all() as { name: string }[];
+    expect(docCols.some((c) => c.name === "folder_id")).toBe(true);
+    expect(deckCols.some((c) => c.name === "folder_id")).toBe(true);
+    legacyDb.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});

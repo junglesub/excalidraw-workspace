@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api, apiForm } from "@/lib/client";
-import type { DeckWithPages } from "@/lib/types";
+import type { DeckWithPages, FolderMeta } from "@/lib/types";
 import { AdminPanel } from "./AdminPanel";
 
 export interface DocMeta {
@@ -12,6 +12,7 @@ export interface DocMeta {
   title: string;
   owner_id: string;
   owner_username: string;
+  folder_id?: string | null;
   permission: "OWNER" | "EDITOR" | "VIEWER";
   thumbnail_path: string | null;
   created_at: string;
@@ -34,9 +35,13 @@ type Tab = "mine" | "shared" | "trash" | "admin";
 
 export default function DashBoardClient({ initialUser }: Props) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const currentFolderId = searchParams.get("folder") || null;
   const [tab, setTab] = useState<Tab>("mine");
   const [mine, setMine] = useState<DocMeta[]>([]);
   const [decks, setDecks] = useState<DeckWithPages[]>([]);
+  const [allFolders, setAllFolders] = useState<FolderMeta[]>([]);
+  const [breadcrumbs, setBreadcrumbs] = useState<FolderMeta[]>([]);
   const [shared, setShared] = useState<DocMeta[]>([]);
   const [trash, setTrash] = useState<DocMeta[]>([]);
   const [adminDocs, setAdminDocs] = useState<DocMeta[]>([]);
@@ -44,6 +49,16 @@ export default function DashBoardClient({ initialUser }: Props) {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const isAdmin = initialUser.role === "ADMIN";
+
+  const [folderModal, setFolderModal] = useState<{ mode: "create" | "rename"; folder?: FolderMeta } | null>(null);
+  const [folderNameInput, setFolderNameInput] = useState("");
+  const [moveModal, setMoveModal] = useState<{
+    type: "folder" | "document" | "deck";
+    id: string;
+    title: string;
+    currentFolderId: string | null;
+  } | null>(null);
+  const [moveTargetId, setMoveTargetId] = useState<string>("");
 
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -88,23 +103,41 @@ export default function DashBoardClient({ initialUser }: Props) {
     }
   }
 
+  const navigateToFolder = useCallback(
+    (folderId: string | null) => {
+      if (folderId) {
+        router.push(`/dashboard?folder=${encodeURIComponent(folderId)}`);
+      } else {
+        router.push("/dashboard");
+      }
+    },
+    [router],
+  );
+
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [mineData, sharedData, trashData, deckData] = await Promise.all([
+      const folderQuery = currentFolderId ? `&parentId=${encodeURIComponent(currentFolderId)}` : "";
+      const [mineData, sharedData, trashData, deckData, folderData] = await Promise.all([
         api<{ documents: DocMeta[] }>("/api/documents"),
         api<{ documents: DocMeta[] }>("/api/documents/shared"),
         api<{ documents: DocMeta[] }>("/api/documents/trash"),
         api<{ decks: DeckWithPages[] }>("/api/decks"),
+        api<{ folders: FolderMeta[]; breadcrumbs: FolderMeta[] }>(`/api/folders?all=1${folderQuery}`),
       ]);
       setMine(mineData.documents);
       setDecks(deckData.decks);
       setShared(sharedData.documents);
       setTrash(trashData.documents);
+      setAllFolders(folderData.folders);
+      setBreadcrumbs(folderData.breadcrumbs);
+      if (currentFolderId && folderData.breadcrumbs.length === 0) {
+        navigateToFolder(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
     }
-  }, []);
+  }, [currentFolderId, navigateToFolder]);
 
   const loadAdmin = useCallback(async () => {
     if (!isAdmin) return;
@@ -133,7 +166,7 @@ export default function DashBoardClient({ initialUser }: Props) {
     try {
       const res = await api<{ deck: DeckWithPages }>("/api/decks", {
         method: "POST",
-        body: JSON.stringify({ title: "Untitled Deck", aspectRatio: "16:9" }),
+        body: JSON.stringify({ title: "Untitled Deck", aspectRatio: "16:9", folderId: currentFolderId }),
       });
       router.push(`/decks/${res.deck.id}`);
     } catch (err) {
@@ -146,7 +179,7 @@ export default function DashBoardClient({ initialUser }: Props) {
     try {
       const res = await api<{ document: DocMeta }>("/api/documents", {
         method: "POST",
-        body: JSON.stringify({ title: "Untitled" }),
+        body: JSON.stringify({ title: "Untitled", folderId: currentFolderId }),
       });
       router.push(`/documents/${res.document.id}`);
     } catch (err) {
@@ -161,10 +194,77 @@ export default function DashBoardClient({ initialUser }: Props) {
     try {
       const form = new FormData();
       form.append("file", file);
+      if (currentFolderId) {
+        form.append("folderId", currentFolderId);
+      }
       const res = await apiForm<{ document: DocMeta }>("/api/documents/import", form);
       router.push(`/documents/${res.document.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Import failed");
+    }
+  }
+
+  async function handleFolderSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!folderModal) return;
+    setError(null);
+    try {
+      if (folderModal.mode === "create") {
+        await api("/api/folders", {
+          method: "POST",
+          body: JSON.stringify({ name: folderNameInput, parentId: currentFolderId }),
+        });
+      } else if (folderModal.folder) {
+        await api(`/api/folders/${folderModal.folder.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name: folderNameInput }),
+        });
+      }
+      setFolderModal(null);
+      setFolderNameInput("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Folder action failed");
+    }
+  }
+
+  async function handleDeleteFolder(folder: FolderMeta) {
+    if (!confirm(`Delete folder "${folder.name}"? Its contents will be moved to its parent folder.`)) return;
+    setError(null);
+    try {
+      await api(`/api/folders/${folder.id}`, { method: "DELETE" });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete folder");
+    }
+  }
+
+  async function handleMoveSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!moveModal) return;
+    setError(null);
+    const targetFolderId = moveTargetId === "" ? null : moveTargetId;
+    try {
+      if (moveModal.type === "folder") {
+        await api(`/api/folders/${moveModal.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ parentId: targetFolderId }),
+        });
+      } else if (moveModal.type === "document") {
+        await api(`/api/documents/${moveModal.id}/move`, {
+          method: "PATCH",
+          body: JSON.stringify({ folderId: targetFolderId }),
+        });
+      } else {
+        await api(`/api/decks/${moveModal.id}/move`, {
+          method: "PATCH",
+          body: JSON.stringify({ folderId: targetFolderId }),
+        });
+      }
+      setMoveModal(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Move failed");
     }
   }
 
@@ -188,8 +288,18 @@ export default function DashBoardClient({ initialUser }: Props) {
     }
   }
 
-  const filteredMine = mine.filter((d) => d.title.toLowerCase().includes(query.toLowerCase()));
-  const filteredAdmin = adminDocs.filter((d) => d.title.toLowerCase().includes(query.toLowerCase()));
+  const normalizedQuery = query.trim().toLowerCase();
+  const foldersInCurrent = allFolders.filter((f) => (f.parent_id ?? null) === currentFolderId);
+  const decksInCurrent = decks.filter((d) => (d.folderId ?? null) === currentFolderId);
+  const docsInCurrent = mine.filter((d) => (d.folder_id ?? null) === currentFolderId);
+
+  const filteredFolders = foldersInCurrent.filter((f) => f.name.toLowerCase().includes(normalizedQuery));
+  const filteredDecks = decksInCurrent.filter((d) => d.title.toLowerCase().includes(normalizedQuery));
+  const filteredMine = docsInCurrent.filter((d) => d.title.toLowerCase().includes(normalizedQuery));
+  const isCurrentFolderEmpty = foldersInCurrent.length === 0 && decksInCurrent.length === 0 && docsInCurrent.length === 0;
+  const hasSearchNoMatches =
+    normalizedQuery.length > 0 && filteredFolders.length === 0 && filteredDecks.length === 0 && filteredMine.length === 0;
+  const filteredAdmin = adminDocs.filter((d) => d.title.toLowerCase().includes(normalizedQuery));
 
   function logout() {
     fetch("/api/auth/logout", { method: "POST", credentials: "include" }).then(() => {
@@ -282,29 +392,149 @@ export default function DashBoardClient({ initialUser }: Props) {
                 onChange={importExcal}
               />
             </label>
+            <button
+              onClick={() => {
+                setFolderNameInput("");
+                setFolderModal({ mode: "create" });
+              }}
+              className="px-3 py-1.5 border bg-white rounded text-sm hover:bg-gray-50"
+            >
+              + New Folder
+            </button>
           </div>
-          {decks.length > 0 && (
-            <div className="mb-8">
-              <h2 className="text-sm font-semibold text-gray-700 mb-3">Presentation Decks</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {decks.map((deck) => (
-                  <Link key={deck.id} href={`/decks/${deck.id}`} className="bg-white border rounded p-4 hover:shadow transition block">
-                    <div className="font-medium truncate">{deck.title}</div>
-                    <div className="text-xs text-gray-500 mt-1">{deck.aspectRatio} / {deck.pages.length} page{deck.pages.length === 1 ? "" : "s"}</div>
-                  </Link>
-                ))}
-              </div>
-            </div>
-          )}
-          <h2 className="text-sm font-semibold text-gray-700 mb-3">Documents</h2>
-          {filteredMine.length === 0 ? (
-            <EmptyState message="No documents yet." />
+
+          <nav aria-label="Folder breadcrumbs" className="flex items-center gap-1.5 text-sm text-gray-600 mb-4 flex-wrap">
+            <button
+              onClick={() => navigateToFolder(null)}
+              className={`hover:underline ${currentFolderId === null ? "font-semibold text-gray-900" : ""}`}
+            >
+              My Documents
+            </button>
+            {breadcrumbs.map((crumb) => (
+              <span key={crumb.id} className="flex items-center gap-1.5">
+                <span className="text-gray-400">/</span>
+                <button
+                  onClick={() => navigateToFolder(crumb.id)}
+                  className={`hover:underline ${crumb.id === currentFolderId ? "font-semibold text-gray-900" : ""}`}
+                >
+                  {crumb.name}
+                </button>
+              </span>
+            ))}
+          </nav>
+
+          {isCurrentFolderEmpty ? (
+            <EmptyState message={currentFolderId ? "This folder is empty." : "No documents yet."} />
+          ) : hasSearchNoMatches ? (
+            <EmptyState message={`No matches for "${query.trim()}" in this folder.`} />
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredMine.map((d) => (
-                <DocCard key={d.id} doc={d} />
-              ))}
-            </div>
+            <>
+              {filteredFolders.length > 0 && (
+                <div className="mb-8">
+                  <h2 className="text-sm font-semibold text-gray-700 mb-3">Folders</h2>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filteredFolders.map((folder) => (
+                      <div key={folder.id} className="bg-white border rounded p-4 hover:shadow transition flex flex-col justify-between gap-2">
+                        <button
+                          onClick={() => navigateToFolder(folder.id)}
+                          className="text-left font-medium truncate hover:text-blue-600"
+                        >
+                          📁 {folder.name}
+                        </button>
+                        <div className="flex gap-3 text-xs text-gray-500">
+                          <button
+                            onClick={() => {
+                              setFolderNameInput(folder.name);
+                              setFolderModal({ mode: "rename", folder });
+                            }}
+                            className="hover:text-gray-800 hover:underline"
+                          >
+                            Rename
+                          </button>
+                          <button
+                            onClick={() => {
+                              setMoveTargetId(folder.parent_id ?? "");
+                              setMoveModal({
+                                type: "folder",
+                                id: folder.id,
+                                title: folder.name,
+                                currentFolderId: folder.parent_id ?? null,
+                              });
+                            }}
+                            className="hover:text-gray-800 hover:underline"
+                          >
+                            Move
+                          </button>
+                          <button
+                            onClick={() => handleDeleteFolder(folder)}
+                            className="text-red-600 hover:underline"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {filteredDecks.length > 0 && (
+                <div className="mb-8">
+                  <h2 className="text-sm font-semibold text-gray-700 mb-3">Presentation Decks</h2>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filteredDecks.map((deck) => (
+                      <div key={deck.id} className="bg-white border rounded p-4 hover:shadow transition flex flex-col justify-between gap-2">
+                        <Link href={`/decks/${deck.id}`} className="block">
+                          <div className="font-medium truncate">{deck.title}</div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            {deck.aspectRatio} / {deck.pages.length} page{deck.pages.length === 1 ? "" : "s"}
+                          </div>
+                        </Link>
+                        <div className="flex gap-3 text-xs text-gray-500">
+                          <button
+                            onClick={() => {
+                              setMoveTargetId(deck.folderId ?? "");
+                              setMoveModal({
+                                type: "deck",
+                                id: deck.id,
+                                title: deck.title,
+                                currentFolderId: deck.folderId ?? null,
+                              });
+                            }}
+                            className="hover:text-gray-800 hover:underline"
+                          >
+                            Move
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {filteredMine.length > 0 && (
+                <div>
+                  <h2 className="text-sm font-semibold text-gray-700 mb-3">Documents</h2>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filteredMine.map((d) => (
+                      <DocCard
+                        key={d.id}
+                        doc={d}
+                        onMove={() => {
+                          setMoveTargetId(d.folder_id ?? "");
+                          setMoveModal({
+                            type: "document",
+                            id: d.id,
+                            title: d.title,
+                            currentFolderId: d.folder_id ?? null,
+                          });
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </section>
       )}
@@ -443,6 +673,83 @@ export default function DashBoardClient({ initialUser }: Props) {
         </div>
       )}
 
+      {folderModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-lg max-w-sm w-full p-5">
+            <h3 className="text-base font-semibold mb-3">
+              {folderModal.mode === "create" ? "New Folder" : "Rename Folder"}
+            </h3>
+            <form onSubmit={handleFolderSubmit} className="space-y-4">
+              <input
+                type="text"
+                value={folderNameInput}
+                onChange={(e) => setFolderNameInput(e.target.value)}
+                placeholder="Folder name"
+                maxLength={100}
+                autoFocus
+                required
+                className="w-full px-3 py-2 border rounded text-sm"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFolderModal(null)}
+                  className="px-3 py-1.5 border rounded text-sm hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                >
+                  {folderModal.mode === "create" ? "Create" : "Save"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {moveModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-lg max-w-sm w-full p-5">
+            <h3 className="text-base font-semibold mb-1">Move &ldquo;{moveModal.title}&rdquo;</h3>
+            <p className="text-xs text-gray-500 mb-3">Select destination folder</p>
+            <form onSubmit={handleMoveSubmit} className="space-y-4">
+              <select
+                value={moveTargetId}
+                onChange={(e) => setMoveTargetId(e.target.value)}
+                className="w-full px-3 py-2 border rounded text-sm bg-white"
+              >
+                <option value="">My Documents (Root)</option>
+                {allFolders
+                  .filter((f) => moveModal.type !== "folder" || f.id !== moveModal.id)
+                  .map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+              </select>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setMoveModal(null)}
+                  className="px-3 py-1.5 border rounded text-sm hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+                >
+                  Move
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       <footer className="mt-12 pt-6 border-t border-gray-200 flex flex-col sm:flex-row items-center justify-between text-xs text-gray-400 gap-2">
         <div className="flex items-center gap-2">
           <span>Private Excalidraw Workspace</span>
@@ -492,29 +799,39 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-function DocCard({ doc }: { doc: DocMeta }) {
+function DocCard({ doc, onMove }: { doc: DocMeta; onMove?: () => void }) {
   const cleanThumb = doc.thumbnail_path
     ? `/api/thumbnails/${doc.thumbnail_path.replace(/^thumbnails[\\/]/, "").replace(/\\/g, "/")}`
     : null;
   return (
-    <Link
-      href={`/documents/${doc.id}`}
-      className="group bg-white border rounded overflow-hidden hover:shadow transition block"
-    >
-      <div className="aspect-video bg-gray-100 flex items-center justify-center">
-        {cleanThumb ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={cleanThumb} alt={doc.title} className="w-full h-full object-cover" />
-        ) : (
-          <span className="text-gray-400 text-sm">Preview</span>
-        )}
-      </div>
-      <div className="p-3">
-        <div className="font-medium truncate">{doc.title}</div>
-        <div className="text-xs text-gray-500 mt-1">
-          Updated {new Date(doc.updated_at).toLocaleString()}
+    <div className="group bg-white border rounded overflow-hidden hover:shadow transition flex flex-col">
+      <Link href={`/documents/${doc.id}`} className="block flex-1">
+        <div className="aspect-video bg-gray-100 flex items-center justify-center">
+          {cleanThumb ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={cleanThumb} alt={doc.title} className="w-full h-full object-cover" />
+          ) : (
+            <span className="text-gray-400 text-sm">Preview</span>
+          )}
         </div>
-      </div>
-    </Link>
+        <div className="p-3 pb-2">
+          <div className="font-medium truncate">{doc.title}</div>
+          <div className="text-xs text-gray-500 mt-1">
+            Updated {new Date(doc.updated_at).toLocaleString()}
+          </div>
+        </div>
+      </Link>
+      {onMove && (
+        <div className="px-3 pb-3 pt-1 flex gap-3 text-xs text-gray-500">
+          <button
+            type="button"
+            onClick={onMove}
+            className="hover:text-gray-800 hover:underline"
+          >
+            Move
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

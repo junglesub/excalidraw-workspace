@@ -161,3 +161,10 @@ Detailed implementation guides and verification checklists are available in the 
 ## 📄 License
 
 MIT License.
+
+## Workspace Folders
+
+Personal nested folders are supported in **My Documents** for organizing standalone drawing documents and presentation Decks:
+- Create, rename, move, and delete folders (deleting a folder atomically reparents its immediate child folders, documents—including trashed ones—and Decks to its parent).
+- Create new documents, Decks, and `.excalidraw` imports directly in the current folder.
+- Folders are strictly personal (`owner_id` scoped); private folder metadata is not exposed to shared/public viewers.

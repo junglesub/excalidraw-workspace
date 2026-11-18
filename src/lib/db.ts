@@ -62,6 +62,7 @@ export function resetDb(): DatabaseSync {
     database.exec("DELETE FROM share_links;");
     database.exec("DELETE FROM attachments;");
     database.exec("DELETE FROM documents;");
+    database.exec("DELETE FROM folders;");
     database.exec("DELETE FROM sessions;");
     database.exec("DELETE FROM users;");
   } catch {
@@ -121,10 +122,22 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
+CREATE TABLE IF NOT EXISTS folders (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  owner_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  parent_id  TEXT REFERENCES folders(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_folders_owner ON folders(owner_id);
+CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id);
+
 CREATE TABLE IF NOT EXISTS documents (
   id             TEXT PRIMARY KEY,
   title          TEXT NOT NULL,
   owner_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  folder_id      TEXT REFERENCES folders(id) ON DELETE SET NULL,
   scene          TEXT NOT NULL DEFAULT '{}',
   thumbnail_path TEXT,
   created_at     TEXT NOT NULL,
@@ -186,6 +199,7 @@ CREATE TABLE IF NOT EXISTS decks (
   id                           TEXT PRIMARY KEY,
   title                        TEXT NOT NULL,
   owner_id                     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  folder_id                    TEXT REFERENCES folders(id) ON DELETE SET NULL,
   aspect_ratio                 TEXT NOT NULL CHECK (aspect_ratio IN ('16:9','9:16')),
   active_recording_baseline_id TEXT,
   created_at                   TEXT NOT NULL,
@@ -314,5 +328,19 @@ export function initializeSchema(database: DatabaseSync): void {
     }
   } catch (err) {
     console.error("Failed to migrate attachments table schema:", err);
+  }
+  try {
+    const docCols = database.prepare("PRAGMA table_info(documents)").all() as { name: string }[];
+    if (!docCols.some((c) => c.name === "folder_id")) {
+      database.exec("ALTER TABLE documents ADD COLUMN folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_documents_folder ON documents(folder_id)");
+    }
+    const deckCols = database.prepare("PRAGMA table_info(decks)").all() as { name: string }[];
+    if (!deckCols.some((c) => c.name === "folder_id")) {
+      database.exec("ALTER TABLE decks ADD COLUMN folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL");
+      database.exec("CREATE INDEX IF NOT EXISTS idx_decks_folder ON decks(folder_id)");
+    }
+  } catch (err) {
+    console.error("Failed to migrate folder_id columns:", err);
   }
 }

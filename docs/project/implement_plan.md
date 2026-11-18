@@ -717,3 +717,13 @@ The MVP goals are achieved when the following 20 scenarios operate correctly:
 18. `.excalidraw` import and export work correctly.
 19. All data is preserved when `/data` is retained across container recreations.
 20. Administrator can manage all users and documents in Admin Mode.
+
+---
+
+## Workspace Folders (Implemented)
+
+- **Schema & Migration (`src/lib/db.ts`)**: Added `folders` table (`id`, `name`, `owner_id`, `parent_id`, `created_at`, `updated_at`) and nullable `folder_id` columns on `documents` and `decks` with idempotent startup migration.
+- **Domain Logic (`src/lib/folders.ts`)**: Centralized folder name validation (trimmed, required, max 100 chars), destination/cycle validation, transactional folder deletion (reparenting child folders, documents including trashed ones, and Decks to parent), and item moves (rejecting Deck backing documents).
+- **APIs**: Added `/api/folders`, `/api/folders/[id]`, `/api/documents/[id]/move`, `/api/decks/[id]/move`, and `folderId` support on document/Deck creation and `.excalidraw` import.
+- **Permissions**: Owner-scoped; `folder_id` is hidden from non-owner viewers and cleared atomically on cross-owner ownership transfer.
+- **Verification**: `tests/folders.test.ts` (7/7 passed) and `pnpm exec tsc --noEmit` (passed). Browser UI QA not run in this environment.

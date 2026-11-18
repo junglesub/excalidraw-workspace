@@ -1,5 +1,16 @@
 ﻿# Private Excalidraw Workspace — Todo Follow-up & Verification Report
 
+## Workspace folders — 2026-11-18
+
+- Requested: nested application folders containing documents and presentation Decks, including moving existing items.
+- Design: [Workspace folders](../superpowers/specs/2026-11-18-workspace-folders-design.md).
+- Status: Antigravity implementation received (`r_ceea00088273`); coordinator independent review is **NO-GO**, corrections required. Work is on `feat/workspace-folders`. No build performed.
+- Worker evidence: 7 folder tests and TypeScript checking passed; full-suite baseline was recorded before implementation, not after it. Browser UI QA was not performed.
+- Independent coordinator verification: `pnpm exec vitest run --exclude tests/folders.test.ts` passed all **325 tests in 39 files** after implementation; `git diff --check` passed. No worker-specific tests or typecheck were rerun.
+- Isolated API verification: `pnpm exec tsx .my-orch/verify-workspace-folders.ts` produced 3 passing checks and 4 failing checks. Cross-owner move rejection and current-folder document creation/import passed. Missing document move destination and numeric Deck move destination returned 200 and moved items to root; a cyclic combined folder rename/move returned 400 but retained the new name; a fresh database lacked the documented document/Deck folder indexes. Local evidence: `.my-orch/folder-independent-review.json` (ignored runtime artifact).
+- Static findings: document and Deck editor Dashboard links still point to root; destination selector renders only folder names, making `Project A/Assets` and `Project B/Assets` indistinguishable. Mutation errors render behind the open modal; newly added dialogs also lack accessible labels/dialog semantics and pending guards.
+- Next: delegate focused corrections and regression coverage to Antigravity, then independently review. Checkpoint commits record progress and do not imply feature approval.
+
 ## 1. Summary of Verification Results
 
 > Historical verification summary. The repository-wide audit dated 2026-10-26 in section 4 supersedes any implication below that the complete application has no outstanding defects.

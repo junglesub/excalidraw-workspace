@@ -318,3 +318,15 @@ Step-by-step implementation and quality verification checklist based on the `imp
 
 ### Coordinator review decision
 GO for the documented standalone single-line URL canvas feature after static review of the actual implementation and recorded verification evidence. Worker verification: 27 focused tests, 318 total tests, clean typecheck, and 79 isolated browser assertions. Coordinator did not rerun worker tests. No production build or commit was performed. This approval retains the known limitations above, including bounding-box occlusion for bitmap images with transparent pixels; it does not claim exact per-pixel compositing support.
+
+---
+
+## Workspace Folders Verification
+- [x] Nested folder creation, rename, move, and cycle rejection (`tests/folders.test.ts`)
+- [x] Cross-user isolation (`tests/folders.test.ts`)
+- [x] Populated folder deletion reparents contents including trashed documents (`tests/folders.test.ts`)
+- [x] Deck backing document independent move rejection (`tests/folders.test.ts`)
+- [x] Cross-owner transfer clears `folder_id` and non-owner meta hides `folder_id` (`tests/folders.test.ts`)
+- [x] Idempotent migration on legacy database (`tests/folders.test.ts`)
+- [x] TypeScript check (`pnpm exec tsc --noEmit`)
+- [ ] Interactive browser UI QA (not run in this headless worker environment)

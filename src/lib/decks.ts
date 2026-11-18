@@ -1,4 +1,5 @@
 import { getDb, transaction } from "./db";
+import { validateDestinationFolder } from "./folders";
 import { createDocument, getDocumentRaw, getDocumentWithScene } from "./documents";
 import { permanentDelete } from "./trash";
 import { emptyScene } from "./types";
@@ -50,6 +51,7 @@ function toDeck(row: DeckRow): DeckWithPages {
     id: row.id,
     title: row.title,
     ownerId: row.owner_id,
+    folderId: row.folder_id ?? null,
     aspectRatio: row.aspect_ratio,
     ...(row.active_recording_baseline_id
       ? { activeRecordingBaselineId: row.active_recording_baseline_id }
@@ -77,17 +79,20 @@ export function createDeck(
   ownerId: string,
   title: string,
   aspectRatio: DeckAspectRatio = "16:9",
+  folderId: string | null = null,
 ): DeckWithPages {
   assertAspectRatio(aspectRatio);
   return transaction(() => {
+    const targetFolder = validateDestinationFolder(ownerId, folderId);
+    const resolvedFolderId = targetFolder ? targetFolder.id : null;
     const id = crypto.randomUUID();
     const now = nowIso();
     getDb()
       .prepare(
-        `INSERT INTO decks (id, title, owner_id, aspect_ratio, active_recording_baseline_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+        `INSERT INTO decks (id, title, owner_id, folder_id, aspect_ratio, active_recording_baseline_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
       )
-      .run(id, title.trim() || "Untitled Deck", ownerId, aspectRatio, now, now);
+      .run(id, title.trim() || "Untitled Deck", ownerId, resolvedFolderId, aspectRatio, now, now);
     const doc = createDocument(ownerId, emptyScene(), "Page 1");
     insertPage(id, doc.id, "Page 1", 0);
     return toDeck(rawDeck(id)!);
