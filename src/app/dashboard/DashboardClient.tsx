@@ -50,8 +50,15 @@ export default function DashBoardClient({ initialUser }: Props) {
   const [error, setError] = useState<string | null>(null);
   const isAdmin = initialUser.role === "ADMIN";
 
-  const [folderModal, setFolderModal] = useState<{ mode: "create" | "rename"; folder?: FolderMeta } | null>(null);
+  const [folderModal, setFolderModal] = useState<{ mode: "rename"; folder: FolderMeta } | null>(null);
   const [folderNameInput, setFolderNameInput] = useState("");
+  const [inlineDraft, setInlineDraft] = useState<{ parentId: string | null } | null>(null);
+  const [inlineDraftName, setInlineDraftName] = useState("");
+  const [inlineDraftError, setInlineDraftError] = useState<string | null>(null);
+  const [inlineDraftSubmitting, setInlineDraftSubmitting] = useState(false);
+  const inlineDraftInputRef = useRef<HTMLInputElement | null>(null);
+  const inlineDraftSubmittingRef = useRef(false);
+  const inlineDraftCancelledRef = useRef(false);
   const [moveModal, setMoveModal] = useState<{
     type: "folder" | "document" | "deck";
     id: string;
@@ -224,11 +231,45 @@ export default function DashBoardClient({ initialUser }: Props) {
     }
   }, []);
 
-  const openFolderModal = useCallback((modal: { mode: "create" | "rename"; folder?: FolderMeta }) => {
+  const openFolderModal = useCallback((modal: { mode: "rename"; folder: FolderMeta }) => {
     lastTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setModalError(null);
     setFolderModal(modal);
   }, []);
+
+  const startInlineDraft = useCallback(() => {
+    if (query.trim().length > 0) {
+      setQuery("");
+    }
+    if (inlineDraft) {
+      inlineDraftInputRef.current?.focus();
+      return;
+    }
+    inlineDraftCancelledRef.current = false;
+    inlineDraftSubmittingRef.current = false;
+    setInlineDraftName("");
+    setInlineDraftError(null);
+    setInlineDraft({ parentId: currentFolderId });
+  }, [currentFolderId, inlineDraft, query]);
+
+  const cancelInlineDraft = useCallback(() => {
+    inlineDraftCancelledRef.current = true;
+    setInlineDraft(null);
+    setInlineDraftName("");
+    setInlineDraftError(null);
+  }, []);
+
+  useEffect(() => {
+    if (inlineDraft && inlineDraftInputRef.current) {
+      inlineDraftInputRef.current.focus();
+    }
+  }, [inlineDraft]);
+
+  useEffect(() => {
+    if (inlineDraft && (inlineDraft.parentId !== currentFolderId || tab !== "mine")) {
+      cancelInlineDraft();
+    }
+  }, [currentFolderId, tab, inlineDraft, cancelInlineDraft]);
 
   const openMoveModal = useCallback(
     (modal: { type: "folder" | "document" | "deck"; id: string; title: string; currentFolderId: string | null }) => {
@@ -257,24 +298,53 @@ export default function DashBoardClient({ initialUser }: Props) {
     }
   }, [moveModal]);
 
+  async function submitInlineDraft(source: "enter" | "blur") {
+    if (!inlineDraft || inlineDraftSubmittingRef.current || inlineDraftCancelledRef.current) return;
+    const trimmed = inlineDraftName.trim();
+    if (!trimmed) {
+      if (source === "blur") {
+        cancelInlineDraft();
+      } else {
+        setInlineDraftError("Folder name is required");
+      }
+      return;
+    }
+    if (trimmed.length > 100) {
+      setInlineDraftError("Folder name must be 100 characters or less");
+      return;
+    }
+    inlineDraftSubmittingRef.current = true;
+    setInlineDraftSubmitting(true);
+    setInlineDraftError(null);
+    const targetParentId = inlineDraft.parentId;
+    try {
+      await api("/api/folders", {
+        method: "POST",
+        body: JSON.stringify({ name: trimmed, parentId: targetParentId }),
+      });
+      inlineDraftCancelledRef.current = true;
+      setInlineDraft(null);
+      setInlineDraftName("");
+      await load();
+    } catch (err) {
+      setInlineDraftError(err instanceof Error ? err.message : "Failed to create folder");
+      requestAnimationFrame(() => inlineDraftInputRef.current?.focus());
+    } finally {
+      inlineDraftSubmittingRef.current = false;
+      setInlineDraftSubmitting(false);
+    }
+  }
+
   async function handleFolderSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!folderModal || modalSubmitting) return;
     setModalError(null);
     setModalSubmitting(true);
     try {
-      if (folderModal.mode === "create") {
-        await api("/api/folders", {
-          method: "POST",
-          body: JSON.stringify({ name: folderNameInput, parentId: currentFolderId }),
-        });
-      } else if (folderModal.folder) {
-        await api(`/api/folders/${folderModal.folder.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ name: folderNameInput }),
-        });
-      }
-      setFolderModal(null);
+      await api(`/api/folders/${folderModal.folder.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: folderNameInput }),
+      });
       setFolderNameInput("");
       closeModals();
       await load();
@@ -453,10 +523,7 @@ export default function DashBoardClient({ initialUser }: Props) {
               />
             </label>
             <button
-              onClick={() => {
-                setFolderNameInput("");
-                openFolderModal({ mode: "create" });
-              }}
+              onClick={startInlineDraft}
               className="px-3 py-1.5 border bg-white rounded text-sm hover:bg-gray-50"
             >
               + New Folder
@@ -483,16 +550,54 @@ export default function DashBoardClient({ initialUser }: Props) {
             ))}
           </nav>
 
-          {isCurrentFolderEmpty ? (
+          {isCurrentFolderEmpty && !inlineDraft ? (
             <EmptyState message={currentFolderId ? "This folder is empty." : "No documents yet."} />
-          ) : hasSearchNoMatches ? (
+          ) : hasSearchNoMatches && !inlineDraft ? (
             <EmptyState message={`No matches for "${query.trim()}" in this folder.`} />
           ) : (
             <>
-              {filteredFolders.length > 0 && (
+              {(filteredFolders.length > 0 || inlineDraft) && (
                 <div className="mb-8">
                   <h2 className="text-sm font-semibold text-gray-700 mb-3">Folders</h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {inlineDraft && (
+                      <div className="bg-white border-2 border-blue-500 rounded p-4 shadow-sm flex flex-col gap-2">
+                        <div className="flex items-center gap-2">
+                          <span aria-hidden="true">📁</span>
+                          <input
+                            ref={inlineDraftInputRef}
+                            type="text"
+                            aria-label="New folder name"
+                            value={inlineDraftName}
+                            onChange={(e) => {
+                              setInlineDraftName(e.target.value);
+                              if (inlineDraftError) setInlineDraftError(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                void submitInlineDraft("enter");
+                              } else if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelInlineDraft();
+                              }
+                            }}
+                            onBlur={() => {
+                              void submitInlineDraft("blur");
+                            }}
+                            placeholder="Folder name"
+                            maxLength={100}
+                            disabled={inlineDraftSubmitting}
+                            className="flex-1 px-2 py-1 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        {inlineDraftError && (
+                          <div role="alert" className="text-xs text-red-600">
+                            {inlineDraftError}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {filteredFolders.map((folder) => (
                       <div key={folder.id} className="bg-white border rounded p-4 hover:shadow transition flex flex-col justify-between gap-2">
                         <button
@@ -744,7 +849,7 @@ export default function DashBoardClient({ initialUser }: Props) {
           className="rounded-lg shadow-lg max-w-sm w-full p-5 backdrop:bg-black/40 m-auto"
         >
           <h3 id="folder-modal-title" className="text-base font-semibold mb-3">
-            {folderModal.mode === "create" ? "New Folder" : "Rename Folder"}
+            Rename Folder
           </h3>
           {modalError && (
             <div role="alert" className="mb-3 rounded bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
@@ -783,7 +888,7 @@ export default function DashBoardClient({ initialUser }: Props) {
                 disabled={modalSubmitting}
                 className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
               >
-                {modalSubmitting ? "Saving..." : folderModal.mode === "create" ? "Create" : "Save"}
+                {modalSubmitting ? "Saving..." : "Save"}
               </button>
             </div>
           </form>

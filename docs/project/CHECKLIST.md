@@ -334,3 +334,13 @@ GO for the documented standalone single-line URL canvas feature after static rev
 - [ ] Full interactive move/delete/import/editor-return lifecycle QA (not executed; focused UI checks above do not imply full coverage)
 
 Coordinator decision: GO after review of `04b23ca`. See [final review and evidence limits](TODO_FOLLOWUP.md#final-coordinator-decision--r_5c27ae24c169--04b23ca). No production build, merge, push, or deployment performed.
+
+---
+
+## Inline Folder Creation (`feat/inline-folder-creation`)
+- [x] `+ New Folder` inserts an inline draft folder card at the first slot in the current folder grid (clearing active search if needed, visible in empty folders)
+- [x] `Enter` submits valid trimmed name (1-100 chars); `Blur` submits non-empty valid name or cancels if blank; `Escape` and navigation/tab change cancel without creating a server row
+- [x] Synchronous `inlineDraftSubmittingRef` and `inlineDraftCancelledRef` guard against Enter+blur double submission and cancelled-draft saves
+- [x] Rename and Move native `<dialog>` modals preserved unchanged
+- [x] TypeScript check (`pnpm exec tsc --noEmit`) and `tests/folders.test.ts` (8/8 passed)
+- [ ] Interactive browser UI QA (not run in this headless worker environment)

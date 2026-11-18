@@ -245,3 +245,10 @@ Integration verification: the source branch was committed as `b6c0879` after all
 Final worker evidence: `pnpm exec tsx .my-orch/verify-deck-folder-privacy.ts` passed with a null folder identifier in both read and reorder responses; 8 folder tests passed; `pnpm exec tsc --noEmit` exited 0. Coordinator inspected the actual artifact and code without rerunning the worker's checks. The 325 existing regression tests passed in the earlier post-implementation verification; that is not a claim that the complete suite was rerun after the final privacy patch.
 
 Independent coordinator browser coverage includes dashboard folder creation and focused native New Folder/Move modal behavior, initial focus, background exclusion, and Escape focus restoration on an isolated dev server. Full move/delete/import/editor-return browser lifecycle coverage remains unexecuted; those paths were reviewed statically and have the recorded domain/API tests. No production build, merge, push, or deployment was performed. Product and test code was implemented by Antigravity; coordinator changes were confined to review artifacts/documentation and Git checkpoints. Workspace remains on `feat/workspace-folders`.
+
+### Inline Folder Creation Evidence (2026-11-18)
+- **Inline draft card (`src/app/dashboard/DashboardClient.tsx`)**: Replaced the New Folder modal with an inline draft folder card at the first slot in the current folder grid. Captures `currentFolderId` on start, clears active search so the draft is visible, focuses the inline input, submits on `Enter` or non-empty `Blur` (cancelling on blank `Blur`, `Escape`, or folder/tab navigation), guards against Enter+blur double submission via `inlineDraftSubmittingRef`/`inlineDraftCancelledRef`, and keeps inline errors recoverable. Rename and Move native `<dialog>` modals remain unchanged.
+- **Verification**:
+  - `pnpm exec tsc --noEmit`: passed (exit 0).
+  - `pnpm test -- --run tests/folders.test.ts`: 8/8 passed (exit 0).
+  - Interactive browser UI QA was not run in this headless worker environment.

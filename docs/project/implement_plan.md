@@ -727,3 +727,18 @@ The MVP goals are achieved when the following 20 scenarios operate correctly:
 - **APIs**: Added `/api/folders`, `/api/folders/[id]`, `/api/documents/[id]/move`, `/api/decks/[id]/move`, and `folderId` support on document/Deck creation and `.excalidraw` import.
 - **Permissions**: Owner-scoped; `folder_id` is hidden from non-owner viewers and cleared atomically on cross-owner ownership transfer.
 - **Verification**: `tests/folders.test.ts` (7/7 passed) and `pnpm exec tsc --noEmit` (passed). Browser UI QA not run in this environment.
+
+---
+
+## Inline Folder Creation Plan (`feat/inline-folder-creation`)
+- **State & Refs (`src/app/dashboard/DashboardClient.tsx`)**:
+  - Replace `folderModal.mode === "create"` with inline draft state: `inlineDraft: { parentId: string | null } | null`, `inlineDraftName`, `inlineDraftError`, `inlineDraftSubmitting`.
+  - Keep `folderModal` exclusively for `rename` (`{ mode: "rename"; folder: FolderMeta }`).
+  - Use synchronous refs (`inlineDraftSubmittingRef`, `inlineDraftCancelledRef`) to prevent Enter + blur double submission and accidental save on Escape/navigation.
+- **Behavior**:
+  - Clicking `+ New Folder` clears search (`setQuery("")`) if needed, sets `inlineDraft = { parentId: currentFolderId }` (or focuses existing `inlineDraftInputRef` if already open), and focuses the inline input.
+  - Render the draft folder card as the first card in the `Folders` grid (even when the current folder is otherwise empty).
+  - `Enter`: validates trimmed non-empty name (1..100 chars), shows inline error if invalid, otherwise submits `POST /api/folders` with captured `inlineDraft.parentId`.
+  - `Blur`: if cancelled or submitting, do nothing; if trimmed name is empty, cancel draft; otherwise submit.
+  - `Escape` or navigation (`currentFolderId` / `tab` change): cancel draft cleanly without creating any server row.
+  - Failure on submit keeps the draft open with inline error and re-enables editing.
