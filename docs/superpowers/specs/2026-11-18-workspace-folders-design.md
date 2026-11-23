@@ -20,6 +20,14 @@ The user confirmed the feature scope. The recommended approach and defaults belo
 
 Status: implemented at `0650285` and independently approved after focused desktop browser verification. Full evidence and coverage limits are recorded in `docs/project/TODO_FOLLOWUP.md` under the final independent inline creation review.
 
+### Follow-up: document selection and folder moves
+
+Move the per-document Move action to the right of the card details. In My Documents, show a checkbox in the top-left corner on hover or keyboard focus and keep it visible when selected. While documents are selected, show a floating bar at the bottom of the viewport with the count, Clear selection, and Move to folder. Use the existing destination picker, including the root folder. Selection survives hover and filtering within the current folder and clears when switching folders or tabs.
+
+Dragging a document onto a visible folder card moves it there. Dragging a selected document moves the selected group, while dragging an unselected document moves that document alone. Highlight the destination during drag. Keep the keyboard-accessible picker available for the same operation. Apply the existing ownership and destination rules, and report failed moves without losing the selection for documents that did not move.
+
+Status: implemented on `feat/document-selection-and-move` and independently verified. Evidence and verification limits are recorded in `docs/project/TODO_FOLLOWUP.md`.
+
 Requested after the initial feature review: clicking New Folder should insert a draft folder card in the current folder grid and edit its name there, rather than opening a creation dialog. Show and focus the inline name field even in empty or search-filtered folders. Enter or a nonempty blur saves; Escape cancels without creating a server record. Blank blur cancels, while an invalid submitted name or failed request shows a local error and permits retry. Prevent duplicate blur/Enter submissions and capture the intended parent folder. Existing folder rename and Move dialogs retain their current behavior. This follow-up supersedes the creation-dialog interaction only. Implementation is delegated to the newly opened Antigravity terminal; Codex independently verifies it. No production build is authorized.
 
 - My Documents shows immediate child folders, Decks, and documents; breadcrumbs navigate ancestors. Keep the existing tabs and card styles.
