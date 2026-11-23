@@ -24,6 +24,7 @@ import {
   listFolders,
   moveDeckToFolder,
   moveDocumentToFolder,
+  moveDocumentsToFolder,
   moveFolder,
   renameFolder,
 } from "@/lib/folders";
@@ -314,5 +315,81 @@ describe("Workspace Folders", () => {
 
     // Owner's folderId is preserved
     expect(getDeck(deck.id, owner.id, "USER").folderId).toBe(parent.id);
+  });
+
+  it("handles batch document moves with validation, dedupe, authorization, and partial outcomes", async () => {
+    const alice = createUser("batch_alice", "password123");
+    const bob = createUser("batch_bob", "password123");
+    const aliceToken = createSession(alice.id).token;
+
+    const aliceFolder = createFolder(alice.id, "Alice Dest", null);
+    const bobFolder = createFolder(bob.id, "Bob Secret", null);
+    const doc1 = createDocument(alice.id, emptyScene(), "Doc 1", null);
+    const doc2 = createDocument(alice.id, emptyScene(), "Doc 2", null);
+    const bobDoc = createDocument(bob.id, emptyScene(), "Bob Doc", null);
+    const deck = createDeck(alice.id, "Alice Deck", "16:9", null);
+    const backingDocId = deck.pages[0].documentId;
+
+    const batchRoute = await import("@/app/api/documents/move/route");
+    const patch = (body: unknown) =>
+      batchRoute.PATCH(
+        new Request("http://test.local/api/documents/move", {
+          method: "PATCH",
+          headers: { cookie: `pew_session=${aliceToken}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+
+    // Reject invalid payloads
+    expect((await patch({ documentIds: [], folderId: aliceFolder.id })).status).toBe(400);
+    expect((await patch({ documentIds: [doc1.id] })).status).toBe(400);
+    expect((await patch({ documentIds: Array.from({ length: 101 }, (_, i) => `d-${i}`), folderId: null })).status).toBe(
+      400,
+    );
+
+    // Reject foreign destination folder with 403 and no foreign metadata
+    const foreignDestRes = await patch({ documentIds: [doc1.id], folderId: bobFolder.id });
+    expect(foreignDestRes.status).toBe(403);
+    const foreignDestText = await foreignDestRes.text();
+    expect(foreignDestText).not.toContain("Bob Secret");
+
+    // Partial outcomes: owned docs succeed (deduped), foreign doc and deck backing doc fail per-item
+    const partialRes = await patch({
+      documentIds: [doc1.id, doc1.id, bobDoc.id, backingDocId, doc2.id],
+      folderId: aliceFolder.id,
+    });
+    expect(partialRes.status).toBe(200);
+    const partialBody = (await partialRes.json()) as {
+      ok: boolean;
+      folderId: string | null;
+      movedIds: string[];
+      failed: Array<{ id: string; error: string; status: number }>;
+    };
+    expect(partialBody.ok).toBe(false);
+    expect(partialBody.folderId).toBe(aliceFolder.id);
+    expect(partialBody.movedIds).toEqual([doc1.id, doc2.id]);
+    expect(partialBody.failed.map((f) => ({ id: f.id, status: f.status }))).toEqual([
+      { id: bobDoc.id, status: 403 },
+      { id: backingDocId, status: 400 },
+    ]);
+    expect(getDocumentRaw(doc1.id)?.folder_id).toBe(aliceFolder.id);
+    expect(getDocumentRaw(doc2.id)?.folder_id).toBe(aliceFolder.id);
+    expect(getDocumentRaw(bobDoc.id)?.folder_id).toBeNull();
+  });
+
+  it("rolls back batch moves if an unexpected write fails", () => {
+    const owner = createUser("rollback_owner", "password123");
+    const folder = createFolder(owner.id, "Destination");
+    const first = createDocument(owner.id, emptyScene(), "First");
+    const second = createDocument(owner.id, emptyScene(), "Second");
+    const db = getDb();
+    db.exec("CREATE TEMP TRIGGER fail_batch_move BEFORE UPDATE OF folder_id ON documents WHEN OLD.title = 'Second' BEGIN SELECT RAISE(ABORT, 'write failed'); END");
+    try {
+      expect(() => moveDocumentsToFolder(owner.id, [first.id, second.id], folder.id)).toThrow("write failed");
+      expect(getDocumentRaw(first.id)?.folder_id).toBeNull();
+      expect(getDocumentRaw(second.id)?.folder_id).toBeNull();
+    } finally {
+      db.exec("DROP TRIGGER fail_batch_move");
+    }
   });
 });

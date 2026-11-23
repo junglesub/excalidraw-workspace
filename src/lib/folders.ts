@@ -12,6 +12,7 @@ export class FolderError extends Error {
 }
 
 export const MAX_FOLDER_NAME_LENGTH = 100;
+export const MAX_BATCH_MOVE_DOCUMENTS = 100;
 
 export function parseDestinationFolderId(
   value: unknown,
@@ -310,6 +311,54 @@ export function moveDocumentToFolder(
   const resolvedFolderId = target ? target.id : null;
 
   db.prepare("UPDATE documents SET folder_id = ? WHERE id = ?").run(resolvedFolderId, documentId);
+}
+
+export interface BatchMoveFailure {
+  id: string;
+  error: string;
+  status: number;
+}
+
+export function moveDocumentsToFolder(
+  ownerId: string,
+  rawDocumentIds: unknown,
+  targetFolderId: string | null
+): { folderId: string | null; movedIds: string[]; failed: BatchMoveFailure[] } {
+  if (!Array.isArray(rawDocumentIds) || rawDocumentIds.length === 0) {
+    throw new FolderError("documentIds must be a non-empty array", 400);
+  }
+  const uniqueIds: string[] = [];
+  const seen = new Set<string>();
+  for (const item of rawDocumentIds) {
+    if (typeof item !== "string" || item.trim().length === 0) {
+      throw new FolderError("documentIds must contain non-empty strings", 400);
+    }
+    if (!seen.has(item)) {
+      seen.add(item);
+      uniqueIds.push(item);
+    }
+  }
+  if (uniqueIds.length > MAX_BATCH_MOVE_DOCUMENTS) {
+    throw new FolderError(`Cannot move more than ${MAX_BATCH_MOVE_DOCUMENTS} documents at once`, 400);
+  }
+
+  return transaction(() => {
+    const folderId = validateDestinationFolder(ownerId, targetFolderId)?.id ?? null;
+    const movedIds: string[] = [];
+    const failed: BatchMoveFailure[] = [];
+
+    for (const docId of uniqueIds) {
+      try {
+        moveDocumentToFolder(ownerId, docId, folderId);
+        movedIds.push(docId);
+      } catch (err) {
+        if (!(err instanceof FolderError)) throw err;
+        failed.push({ id: docId, error: err.message, status: err.status });
+      }
+    }
+
+    return { folderId, movedIds, failed };
+  });
 }
 
 export function moveDeckToFolder(

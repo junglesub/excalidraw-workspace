@@ -55,23 +55,34 @@ export default function DashBoardClient({ initialUser }: Props) {
   const [mine, setMine] = useState<DocMeta[]>([]);
   const [decks, setDecks] = useState<DeckWithPages[]>([]);
   const [allFolders, setAllFolders] = useState<FolderMeta[]>([]);
-  const folderCreateVersion = useRef(0);
-  const [breadcrumbs, setBreadcrumbs] = useState<FolderMeta[]>([]);
+  const mutationVersionRef = useRef(0);
+  const [hasLoadedFolders, setHasLoadedFolders] = useState(false);
   const [shared, setShared] = useState<DocMeta[]>([]);
+  const [sharedLoading, setSharedLoading] = useState(false);
+  const [sharedLoaded, setSharedLoaded] = useState(false);
+  const [sharedError, setSharedError] = useState<string | null>(null);
+  const sharedRequestVersion = useRef(0);
   const [trash, setTrash] = useState<DocMeta[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [trashLoaded, setTrashLoaded] = useState(false);
+  const [trashError, setTrashError] = useState<string | null>(null);
+  const trashRequestVersion = useRef(0);
   const [adminDocs, setAdminDocs] = useState<DocMeta[]>([]);
   const [users, setUsers] = useState<UserMeta[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const isAdmin = initialUser.role === "ADMIN";
 
-  const [folderModal, setFolderModal] = useState<{ mode: "rename"; folder: FolderMeta } | null>(null);
-  const [folderNameInput, setFolderNameInput] = useState("");
-  const [inlineDraft, setInlineDraft] = useState<{ parentId: string | null } | null>(null);
+  const [inlineDraft, setInlineDraft] = useState<
+    | { mode: "create"; parentId: string | null }
+    | { mode: "rename"; folderId: string; parentId: string | null; originalName: string }
+    | null
+  >(null);
   const [inlineDraftName, setInlineDraftName] = useState("");
   const [inlineDraftError, setInlineDraftError] = useState<string | null>(null);
   const [inlineDraftSubmitting, setInlineDraftSubmitting] = useState(false);
   const inlineDraftInputRef = useRef<HTMLInputElement | null>(null);
+  const inlineDraftTriggerRef = useRef<HTMLElement | null>(null);
   const inlineDraftSubmittingRef = useRef(false);
   const inlineDraftCancelledRef = useRef(false);
   const inlineDraftSuppressBlurRef = useRef(false);
@@ -102,9 +113,7 @@ export default function DashBoardClient({ initialUser }: Props) {
   const [moveFolderDraft, setMoveFolderDraft] = useState<string | null>(null);
   const [modalError, setModalError] = useState<string | null>(null);
   const [modalSubmitting, setModalSubmitting] = useState(false);
-  const folderDialogRef = useRef<HTMLDialogElement | null>(null);
   const moveDialogRef = useRef<HTMLDialogElement | null>(null);
-  const folderInputRef = useRef<HTMLInputElement | null>(null);
   const moveBrowserFocusRef = useRef<HTMLButtonElement | null>(null);
   const lastTriggerRef = useRef<HTMLElement | null>(null);
 
@@ -155,50 +164,80 @@ export default function DashBoardClient({ initialUser }: Props) {
     (folderId: string | null, label?: string) => {
       if (folderId === currentFolderId) return;
       setOpeningTarget({ kind: "folder", id: folderId, label: label ?? "My Documents" });
-      if (folderId) {
-        router.push(`/dashboard?folder=${encodeURIComponent(folderId)}`);
-      } else {
-        router.push("/dashboard");
-      }
+      const url = new URL(window.location.href);
+      if (folderId) url.searchParams.set("folder", folderId);
+      else url.searchParams.delete("folder");
+      window.history.pushState(null, "", url);
     },
-    [currentFolderId, router],
+    [currentFolderId],
   );
 
-  const load = useCallback(async () => {
+  const load = useCallback(async function loadDashboard() {
     setError(null);
     const reqVersion = ++loadRequestVersion.current;
-    const createVersion = folderCreateVersion.current;
+    const startMutationVersion = mutationVersionRef.current;
     setLoadingData(true);
     try {
-      const folderQuery = currentFolderId ? `&parentId=${encodeURIComponent(currentFolderId)}` : "";
-      const [mineData, sharedData, trashData, deckData, folderData] = await Promise.all([
+      const [mineData, deckData, folderData] = await Promise.all([
         api<{ documents: DocMeta[] }>("/api/documents"),
-        api<{ documents: DocMeta[] }>("/api/documents/shared"),
-        api<{ documents: DocMeta[] }>("/api/documents/trash"),
         api<{ decks: DeckWithPages[] }>("/api/decks"),
-        api<{ folders: FolderMeta[]; breadcrumbs: FolderMeta[] }>(`/api/folders?all=1${folderQuery}`),
+        api<{ folders: FolderMeta[] }>("/api/folders?all=1"),
       ]);
       if (reqVersion !== loadRequestVersion.current) return;
+      if (startMutationVersion !== mutationVersionRef.current) return await loadDashboard();
       setMine(mineData.documents);
       setDecks(deckData.decks);
-      setShared(sharedData.documents);
-      setTrash(trashData.documents);
-      if (createVersion === folderCreateVersion.current) setAllFolders(folderData.folders);
-      setBreadcrumbs(folderData.breadcrumbs);
-      if (currentFolderId && folderData.breadcrumbs.length === 0) {
-        navigateToFolder(null, "My Documents");
-        return;
-      }
+      setAllFolders(folderData.folders);
+      setHasLoadedFolders(true);
     } catch (err) {
       if (reqVersion !== loadRequestVersion.current) return;
       setError(err instanceof Error ? err.message : "Failed to load");
     } finally {
       if (reqVersion === loadRequestVersion.current) {
         setLoadingData(false);
-        setOpeningTarget((prev) => (prev?.kind === "folder" && prev.id === currentFolderId ? null : prev));
       }
     }
-  }, [currentFolderId, navigateToFolder]);
+  }, []);
+
+  const loadShared = useCallback(async () => {
+    const reqVersion = ++sharedRequestVersion.current;
+    setSharedError(null);
+    setSharedLoading(true);
+    try {
+      const data = await api<{ documents: DocMeta[] }>("/api/documents/shared");
+      if (reqVersion !== sharedRequestVersion.current) return;
+      setShared(data.documents);
+      setSharedLoaded(true);
+    } catch (err) {
+      if (reqVersion !== sharedRequestVersion.current) return;
+      setSharedError(err instanceof Error ? err.message : "Failed to load shared documents");
+    } finally {
+      if (reqVersion === sharedRequestVersion.current) {
+        setSharedLoading(false);
+      }
+    }
+  }, []);
+
+  const loadTrash = useCallback(async function refreshTrash() {
+    const reqVersion = ++trashRequestVersion.current;
+    const startMutationVersion = mutationVersionRef.current;
+    setTrashError(null);
+    setTrashLoading(true);
+    try {
+      const data = await api<{ documents: DocMeta[] }>("/api/documents/trash");
+      if (reqVersion !== trashRequestVersion.current) return;
+      if (startMutationVersion !== mutationVersionRef.current) return await refreshTrash();
+      setTrash(data.documents);
+      setTrashLoaded(true);
+    } catch (err) {
+      if (reqVersion !== trashRequestVersion.current) return;
+      setTrashError(err instanceof Error ? err.message : "Failed to load trash");
+    } finally {
+      if (reqVersion === trashRequestVersion.current) {
+        setTrashLoading(false);
+      }
+    }
+  }, []);
 
   const loadAdmin = useCallback(async () => {
     if (!isAdmin) return;
@@ -214,15 +253,26 @@ export default function DashBoardClient({ initialUser }: Props) {
     }
   }, [isAdmin]);
 
-  const loadCurrentFolder = useRef(load);
   useEffect(() => {
-    loadCurrentFolder.current = load;
     void load();
   }, [load]);
 
+  const breadcrumbs = getFolderBreadcrumbsFromList(currentFolderId, allFolders);
+  const folderExists = !currentFolderId || breadcrumbs.length > 0;
   useEffect(() => {
-    if (tab === "admin") loadAdmin();
-  }, [tab, loadAdmin]);
+    if (hasLoadedFolders && !loadingData && !folderExists) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("folder");
+      window.history.replaceState(null, "", url);
+    }
+    setOpeningTarget((prev) => (prev?.kind === "folder" && prev.id === currentFolderId ? null : prev));
+  }, [currentFolderId, folderExists, hasLoadedFolders, loadingData]);
+
+  useEffect(() => {
+    if (tab === "shared") void loadShared();
+    else if (tab === "trash") void loadTrash();
+    else if (tab === "admin") void loadAdmin();
+  }, [tab, loadShared, loadTrash, loadAdmin]);
 
   async function createDeck() {
     setError(null);
@@ -268,9 +318,7 @@ export default function DashBoardClient({ initialUser }: Props) {
   }
 
   const closeModals = useCallback(() => {
-    folderDialogRef.current?.close();
     moveDialogRef.current?.close();
-    setFolderModal(null);
     setMoveModal(null);
     setMoveFolderDraft(null);
     setModalError(null);
@@ -281,40 +329,80 @@ export default function DashBoardClient({ initialUser }: Props) {
     }
   }, []);
 
-  const openFolderModal = useCallback((modal: { mode: "rename"; folder: FolderMeta }) => {
-    lastTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setModalError(null);
-    setFolderModal(modal);
+  const restoreInlineFocus = useCallback(() => {
+    const trigger = inlineDraftTriggerRef.current;
+    inlineDraftTriggerRef.current = null;
+    if (trigger && trigger.isConnected && typeof trigger.focus === "function") {
+      requestAnimationFrame(() => trigger.focus());
+    }
   }, []);
 
-  const startInlineDraft = useCallback(() => {
+  const startInlineDraft = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
     if (inlineDraftSubmittingRef.current) return;
     if (query.trim().length > 0) {
       setQuery("");
     }
-    if (inlineDraft) {
+    if (inlineDraft?.mode === "create") {
       inlineDraftSuppressBlurRef.current = false;
       inlineDraftInputRef.current?.focus();
       return;
     }
+    inlineDraftTriggerRef.current = e.currentTarget;
     inlineDraftCancelledRef.current = false;
     inlineDraftSubmittingRef.current = false;
     inlineDraftSuppressBlurRef.current = false;
+    inlineDraftComposingRef.current = false;
     setInlineDraftName("");
     setInlineDraftError(null);
-    setInlineDraft({ parentId: currentFolderId });
+    setInlineDraft({ mode: "create", parentId: currentFolderId });
   }, [currentFolderId, inlineDraft, query]);
 
-  const cancelInlineDraft = useCallback(() => {
-    inlineDraftCancelledRef.current = true;
-    setInlineDraft(null);
-    setInlineDraftName("");
-    setInlineDraftError(null);
-  }, []);
+  const startInlineRename = useCallback(
+    (folder: FolderMeta, trigger: HTMLButtonElement) => {
+      if (inlineDraftSubmittingRef.current) return;
+      if (inlineDraft?.mode === "rename" && inlineDraft.folderId === folder.id) {
+        inlineDraftSuppressBlurRef.current = false;
+        inlineDraftInputRef.current?.focus();
+        return;
+      }
+      inlineDraftTriggerRef.current = trigger;
+      inlineDraftCancelledRef.current = false;
+      inlineDraftSubmittingRef.current = false;
+      inlineDraftSuppressBlurRef.current = false;
+      inlineDraftComposingRef.current = false;
+      setInlineDraftName(folder.name);
+      setInlineDraftError(null);
+      setInlineDraft({
+        mode: "rename",
+        folderId: folder.id,
+        parentId: folder.parent_id ?? null,
+        originalName: folder.name,
+      });
+    },
+    [inlineDraft],
+  );
+
+  const cancelInlineDraft = useCallback(
+    (options?: { restoreFocus?: boolean }) => {
+      inlineDraftCancelledRef.current = true;
+      setInlineDraft(null);
+      setInlineDraftName("");
+      setInlineDraftError(null);
+      if (options?.restoreFocus) {
+        restoreInlineFocus();
+      } else {
+        inlineDraftTriggerRef.current = null;
+      }
+    },
+    [restoreInlineFocus],
+  );
 
   useEffect(() => {
     if (inlineDraft && inlineDraftInputRef.current) {
       inlineDraftInputRef.current.focus();
+      if (inlineDraft.mode === "rename") {
+        inlineDraftInputRef.current.select();
+      }
     }
   }, [inlineDraft]);
 
@@ -363,15 +451,6 @@ export default function DashBoardClient({ initialUser }: Props) {
   );
 
   useEffect(() => {
-    if (folderModal && folderDialogRef.current) {
-      if (!folderDialogRef.current.open) {
-        folderDialogRef.current.showModal();
-      }
-      folderInputRef.current?.focus();
-    }
-  }, [folderModal]);
-
-  useEffect(() => {
     if (moveModal && moveDialogRef.current) {
       if (!moveDialogRef.current.open) {
         moveDialogRef.current.showModal();
@@ -380,15 +459,23 @@ export default function DashBoardClient({ initialUser }: Props) {
     }
   }, [moveModal, moveTargetId]);
 
+  function sortFoldersList(folders: FolderMeta[]): FolderMeta[] {
+    return [...folders].sort(
+      (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "accent" }) || a.created_at.localeCompare(b.created_at),
+    );
+  }
+
+  function upsertFolderInList(folders: FolderMeta[], folder: FolderMeta): FolderMeta[] {
+    return sortFoldersList([...folders.filter((entry) => entry.id !== folder.id), folder]);
+  }
+
   async function createFolderAt(name: string, parentId: string | null) {
     const { folder } = await api<{ folder: FolderMeta }>("/api/folders", {
       method: "POST",
       body: JSON.stringify({ name, parentId }),
     });
-    folderCreateVersion.current += 1;
-    setAllFolders((folders) => [...folders.filter((entry) => entry.id !== folder.id), folder].sort(
-      (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "accent" }) || a.created_at.localeCompare(b.created_at),
-    ));
+    mutationVersionRef.current += 1;
+    setAllFolders((folders) => upsertFolderInList(folders, folder));
     return folder;
   }
 
@@ -411,17 +498,43 @@ export default function DashBoardClient({ initialUser }: Props) {
       setInlineDraftError("Folder name must be 100 characters or less");
       return;
     }
+    if (inlineDraft.mode === "rename" && trimmed === inlineDraft.originalName) {
+      cancelInlineDraft({ restoreFocus: source === "enter" });
+      return;
+    }
     inlineDraftSubmittingRef.current = true;
     setInlineDraftSubmitting(true);
     setInlineDraftError(null);
-    const targetParentId = inlineDraft.parentId;
+    const activeEdit = inlineDraft;
     try {
-      await createFolderAt(trimmed, targetParentId);
+      if (activeEdit.mode === "create") {
+        await createFolderAt(trimmed, activeEdit.parentId);
+      } else {
+        const { folder } = await api<{ folder: FolderMeta }>(`/api/folders/${activeEdit.folderId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name: trimmed }),
+        });
+        mutationVersionRef.current += 1;
+        setAllFolders((prev) => sortFoldersList(prev.map((entry) => entry.id === folder.id
+          ? { ...entry, name: folder.name }
+          : entry)));
+      }
       inlineDraftCancelledRef.current = true;
       setInlineDraft(null);
       setInlineDraftName("");
+      if (source === "enter") {
+        restoreInlineFocus();
+      } else {
+        inlineDraftTriggerRef.current = null;
+      }
     } catch (err) {
-      setInlineDraftError(err instanceof Error ? err.message : "Failed to create folder");
+      setInlineDraftError(
+        err instanceof Error
+          ? err.message
+          : activeEdit.mode === "create"
+            ? "Failed to create folder"
+            : "Failed to rename folder",
+      );
       requestAnimationFrame(() => inlineDraftInputRef.current?.focus());
     } finally {
       inlineDraftSubmittingRef.current = false;
@@ -429,32 +542,27 @@ export default function DashBoardClient({ initialUser }: Props) {
     }
   }
 
-  async function handleFolderSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!folderModal || modalSubmitting) return;
-    setModalError(null);
-    setModalSubmitting(true);
-    try {
-      await api(`/api/folders/${folderModal.folder.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ name: folderNameInput }),
-      });
-      setFolderNameInput("");
-      closeModals();
-      await load();
-    } catch (err) {
-      setModalError(err instanceof Error ? err.message : "Folder action failed");
-    } finally {
-      setModalSubmitting(false);
-    }
-  }
-
   async function handleDeleteFolder(folder: FolderMeta) {
     if (!confirm(`Delete folder "${folder.name}"? Its contents will be moved to its parent folder.`)) return;
     setError(null);
     try {
-      await api(`/api/folders/${folder.id}`, { method: "DELETE" });
-      await load();
+      const { reparentedTo } = await api<{ ok: boolean; reparentedTo: string | null }>(`/api/folders/${folder.id}`, {
+        method: "DELETE",
+      });
+      mutationVersionRef.current += 1;
+      setAllFolders((prev) =>
+        sortFoldersList(
+          prev
+            .filter((f) => f.id !== folder.id)
+            .map((f) => (f.parent_id === folder.id ? { ...f, parent_id: reparentedTo } : f)),
+        ),
+      );
+      setMine((prev) => prev.map((d) => (d.folder_id === folder.id ? { ...d, folder_id: reparentedTo } : d)));
+      setDecks((prev) => prev.map((d) => (d.folderId === folder.id ? { ...d, folderId: reparentedTo } : d)));
+      setTrash((prev) => prev.map((d) => (d.folder_id === folder.id ? { ...d, folder_id: reparentedTo } : d)));
+      if (currentFolderId === folder.id) {
+        setSelectedDocIds([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete folder");
     }
@@ -480,21 +588,61 @@ export default function DashBoardClient({ initialUser }: Props) {
     if (source === "drag") setError(null);
     else setModalError(null);
     try {
-      const result = await executeDocumentMoves(movableIds, targetFolderId, docsInCurrent, async (id, folderId) => {
-        await api(`/api/documents/${id}/move`, {
-          method: "PATCH",
-          body: JSON.stringify({ folderId }),
+      let succeededIds: string[] = [];
+      let failed: Array<{ id: string; message: string }> = [];
+      let errorMessage: string | null = null;
+      let resolvedFolderId: string | null = targetFolderId;
+
+      if (movableIds.length === 1) {
+        const result = await executeDocumentMoves(movableIds, targetFolderId, docsInCurrent, async (id, folderId) => {
+          const res = await api<{ ok: boolean; folderId: string | null }>(`/api/documents/${id}/move`, {
+            method: "PATCH",
+            body: JSON.stringify({ folderId }),
+          });
+          resolvedFolderId = res.folderId;
         });
-      });
-      if (result.succeededIds.length > 0) {
-        setSelectedDocIds((prev) => reconcileSelectionAfterMove(prev, result.succeededIds));
-        await loadCurrentFolder.current();
+        succeededIds = result.succeededIds;
+        failed = result.failed;
+        errorMessage = result.errorMessage;
+      } else {
+        try {
+          const res = await api<{
+            ok: boolean;
+            folderId: string | null;
+            movedIds: string[];
+            failed: Array<{ id: string; error: string; status: number }>;
+          }>("/api/documents/move", {
+            method: "PATCH",
+            body: JSON.stringify({ documentIds: movableIds, folderId: targetFolderId }),
+          });
+          resolvedFolderId = res.folderId;
+          succeededIds = res.movedIds;
+          failed = res.failed.map((f) => ({ id: f.id, message: f.error }));
+          if (failed.length > 0) {
+            const firstReason = failed[0].message;
+            errorMessage =
+              succeededIds.length === 0
+                ? `Failed to move ${failed.length} documents: ${firstReason}`
+                : `Moved ${succeededIds.length} of ${movableIds.length} documents. Failed to move ${failed.length}: ${firstReason}`;
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Move failed";
+          failed = movableIds.map((id) => ({ id, message: msg }));
+          errorMessage = `Failed to move ${movableIds.length} documents: ${msg}`;
+        }
       }
-      if (result.errorMessage) {
+
+      if (succeededIds.length > 0) {
+        mutationVersionRef.current += 1;
+        const movedSet = new Set(succeededIds);
+        setMine((prev) => prev.map((d) => (movedSet.has(d.id) ? { ...d, folder_id: resolvedFolderId } : d)));
+        setSelectedDocIds((prev) => reconcileSelectionAfterMove(prev, succeededIds));
+      }
+      if (errorMessage) {
         if (source === "modal") {
-          setModalError(result.errorMessage);
-          if (result.failed.length > 0) {
-            const failedIds = result.failed.map((f) => f.id);
+          setModalError(errorMessage);
+          if (failed.length > 0) {
+            const failedIds = failed.map((f) => f.id);
             setMoveModal((prev) =>
               prev && prev.type === "document"
                 ? {
@@ -509,7 +657,7 @@ export default function DashBoardClient({ initialUser }: Props) {
             );
           }
         } else {
-          setError(result.errorMessage);
+          setError(errorMessage);
         }
       } else if (source === "modal") {
         closeModals();
@@ -539,11 +687,12 @@ export default function DashBoardClient({ initialUser }: Props) {
     if (source === "drag") setError(null);
     else setModalError(null);
     try {
-      await api(`/api/folders/${folderId}`, {
+      const { folder } = await api<{ folder: FolderMeta }>(`/api/folders/${folderId}`, {
         method: "PATCH",
         body: JSON.stringify({ parentId: targetFolderId }),
       });
-      await loadCurrentFolder.current();
+      mutationVersionRef.current += 1;
+      setAllFolders((prev) => upsertFolderInList(prev, folder));
       if (source === "modal") closeModals();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Move failed";
@@ -647,11 +796,12 @@ export default function DashBoardClient({ initialUser }: Props) {
       }
       movingDocsRef.current = true;
       setMoveStatus({ label: `Moving "${moveModal.title}"...`, source: "modal" });
-      await api(`/api/decks/${moveModal.id}/move`, {
+      const res = await api<{ ok: boolean; folderId: string | null }>(`/api/decks/${moveModal.id}/move`, {
         method: "PATCH",
         body: JSON.stringify({ folderId: targetFolderId }),
       });
-      await loadCurrentFolder.current();
+      mutationVersionRef.current += 1;
+      setDecks((prev) => prev.map((d) => (d.id === moveModal.id ? { ...d, folderId: res.folderId } : d)));
       closeModals();
     } catch (err) {
       setModalError(err instanceof Error ? err.message : "Move failed");
@@ -665,7 +815,7 @@ export default function DashBoardClient({ initialUser }: Props) {
   async function restore(id: string) {
     try {
       await api(`/api/documents/${id}?action=restore`, { method: "POST" });
-      await load();
+      await Promise.all([load(), loadTrash()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Restore failed");
     }
@@ -675,8 +825,11 @@ export default function DashBoardClient({ initialUser }: Props) {
     if (!confirm("Permanently delete this document? This cannot be undone.")) return;
     try {
       await api(`/api/documents/${id}?permanent=1`, { method: "DELETE" });
-      await load();
-      if (tab === "admin") await loadAdmin();
+      if (tab === "admin") {
+        await Promise.all([loadAdmin(), load(), loadTrash()]);
+      } else {
+        await loadTrash();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");
     }
@@ -687,7 +840,9 @@ export default function DashBoardClient({ initialUser }: Props) {
   const decksInCurrent = decks.filter((d) => (d.folderId ?? null) === currentFolderId);
   const docsInCurrent = mine.filter((d) => (d.folder_id ?? null) === currentFolderId);
 
-  const filteredFolders = foldersInCurrent.filter((f) => f.name.toLowerCase().includes(normalizedQuery));
+  const filteredFolders = foldersInCurrent.filter((f) =>
+    (inlineDraft?.mode === "rename" && inlineDraft.folderId === f.id) || f.name.toLowerCase().includes(normalizedQuery),
+  );
   const filteredDecks = decksInCurrent.filter((d) => d.title.toLowerCase().includes(normalizedQuery));
   const filteredMine = docsInCurrent.filter((d) => d.title.toLowerCase().includes(normalizedQuery));
   const isCurrentFolderEmpty = foldersInCurrent.length === 0 && decksInCurrent.length === 0 && docsInCurrent.length === 0;
@@ -951,7 +1106,7 @@ export default function DashBoardClient({ initialUser }: Props) {
                 <div className="mb-8">
                   <h2 className="text-sm font-semibold text-gray-700 mb-3">Folders</h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {inlineDraft && (
+                    {inlineDraft?.mode === "create" && (
                       <div className="bg-white border rounded p-4 flex flex-col gap-2">
                         <div className="flex items-center gap-2">
                           <span aria-hidden="true">📁</span>
@@ -979,7 +1134,7 @@ export default function DashBoardClient({ initialUser }: Props) {
                                 void submitInlineDraft("enter");
                               } else if (e.key === "Escape") {
                                 e.preventDefault();
-                                cancelInlineDraft();
+                                cancelInlineDraft({ restoreFocus: true });
                               }
                             }}
                             onBlur={() => {
@@ -1003,6 +1158,7 @@ export default function DashBoardClient({ initialUser }: Props) {
                         (draggingDocIds !== null || draggingFolder !== null) && dragOverFolderId === folder.id;
                       const isOpening = openingTarget?.kind === "folder" && openingTarget.id === folder.id;
                       const isDraggingThis = draggingFolder?.id === folder.id;
+                      const isRenaming = inlineDraft?.mode === "rename" && inlineDraft.folderId === folder.id;
                       const canDragFolder = !inlineDraft && moveStatus === null && !modalSubmitting;
                       return (
                         <div
@@ -1025,7 +1181,7 @@ export default function DashBoardClient({ initialUser }: Props) {
                           onDragLeave={(e) => handleFolderDragLeave(e, folder.id)}
                           onDrop={(e) => handleFolderDrop(e, folder.id)}
                           data-drop-active={isDropTarget ? "true" : undefined}
-                          aria-busy={isOpening ? "true" : undefined}
+                          aria-busy={isOpening || (isRenaming && inlineDraftSubmitting) ? "true" : undefined}
                           className={`border rounded p-4 hover:shadow transition flex flex-col justify-between gap-2 ${
                             isDropTarget
                               ? "bg-blue-50 border-blue-500 ring-2 ring-blue-500"
@@ -1036,30 +1192,86 @@ export default function DashBoardClient({ initialUser }: Props) {
                             canDragFolder ? "cursor-grab active:cursor-grabbing" : ""
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <button
-                              onMouseDown={() => {
-                                if (inlineDraft) cancelInlineDraft();
-                              }}
-                              onClick={() => navigateToFolder(folder.id, folder.name)}
-                              className="min-w-0 flex-1 text-left font-medium truncate hover:text-blue-600"
-                            >
-                              📁 {folder.name}
-                            </button>
-                            {isOpening && (
-                              <span className="shrink-0 inline-flex items-center gap-1 text-xs text-blue-700 font-medium">
-                                <Spinner className="h-3 w-3 text-blue-600" />
-                                Opening...
-                              </span>
-                            )}
-                          </div>
+                          {isRenaming ? (
+                            <div className="flex flex-col gap-1.5">
+                              <div className="flex items-center gap-2">
+                                <span aria-hidden="true">📁</span>
+                                <input
+                                  ref={inlineDraftInputRef}
+                                  type="text"
+                                  aria-label={`Rename folder ${folder.name}`}
+                                  value={inlineDraftName}
+                                  onChange={(e) => {
+                                    setInlineDraftName(e.target.value);
+                                    if (inlineDraftError) setInlineDraftError(null);
+                                  }}
+                                  onCompositionStart={() => {
+                                    inlineDraftComposingRef.current = true;
+                                  }}
+                                  onCompositionEnd={() => {
+                                    inlineDraftComposingRef.current = false;
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.nativeEvent.isComposing || e.keyCode === 229 || inlineDraftComposingRef.current) {
+                                      return;
+                                    }
+                                    if (e.key === "Enter") {
+                                      e.preventDefault();
+                                      void submitInlineDraft("enter");
+                                    } else if (e.key === "Escape") {
+                                      e.preventDefault();
+                                      cancelInlineDraft({ restoreFocus: true });
+                                    }
+                                  }}
+                                  onBlur={() => {
+                                    void submitInlineDraft("blur");
+                                  }}
+                                  placeholder="Folder name"
+                                  maxLength={100}
+                                  disabled={inlineDraftSubmitting}
+                                  className="min-w-0 flex-1 px-2 py-1 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                />
+                                {inlineDraftSubmitting && (
+                                  <span role="status" className="shrink-0 text-xs text-gray-500">
+                                    Saving...
+                                  </span>
+                                )}
+                              </div>
+                              {inlineDraftError && (
+                                <div role="alert" className="text-xs text-red-600">
+                                  {inlineDraftError}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between gap-2">
+                              <button
+                                onMouseDown={() => {
+                                  if (inlineDraft) cancelInlineDraft();
+                                }}
+                                onClick={() => navigateToFolder(folder.id, folder.name)}
+                                className="min-w-0 flex-1 text-left font-medium truncate hover:text-blue-600"
+                              >
+                                📁 {folder.name}
+                              </button>
+                              {isOpening && (
+                                <span className="shrink-0 inline-flex items-center gap-1 text-xs text-blue-700 font-medium">
+                                  <Spinner className="h-3 w-3 text-blue-600" />
+                                  Opening...
+                                </span>
+                              )}
+                            </div>
+                          )}
                           <div className="flex gap-3 text-xs text-gray-500">
                             <button
-                              onClick={() => {
-                                setFolderNameInput(folder.name);
-                                openFolderModal({ mode: "rename", folder });
+                              disabled={inlineDraftSubmitting}
+                              onMouseDown={() => {
+                                if (inlineDraft) {
+                                  inlineDraftSuppressBlurRef.current = true;
+                                }
                               }}
-                              className="hover:text-gray-800 hover:underline"
+                              onClick={(e) => startInlineRename(folder, e.currentTarget)}
+                              className="hover:text-gray-800 hover:underline disabled:opacity-50"
                             >
                               Rename
                             </button>
@@ -1224,7 +1436,21 @@ export default function DashBoardClient({ initialUser }: Props) {
 
       {tab === "shared" && (
         <section>
-          {shared.length === 0 ? (
+          {sharedError && (
+            <div role="alert" className="mb-4 rounded bg-red-50 text-red-700 px-4 py-2 text-sm">
+              {sharedError}
+            </div>
+          )}
+          {sharedLoading && !sharedLoaded ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="rounded border border-dashed p-10 text-center text-gray-500 flex items-center justify-center gap-2"
+            >
+              <Spinner className="h-4 w-4 text-blue-600" />
+              <span>Loading shared documents...</span>
+            </div>
+          ) : shared.length === 0 ? (
             <EmptyState message="No documents shared with you." />
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1247,7 +1473,21 @@ export default function DashBoardClient({ initialUser }: Props) {
 
       {tab === "trash" && (
         <section>
-          {trash.length === 0 ? (
+          {trashError && (
+            <div role="alert" className="mb-4 rounded bg-red-50 text-red-700 px-4 py-2 text-sm">
+              {trashError}
+            </div>
+          )}
+          {trashLoading && !trashLoaded ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="rounded border border-dashed p-10 text-center text-gray-500 flex items-center justify-center gap-2"
+            >
+              <Spinner className="h-4 w-4 text-blue-600" />
+              <span>Loading trash...</span>
+            </div>
+          ) : trash.length === 0 ? (
             <EmptyState message="Trash is empty." />
           ) : (
             <ul className="space-y-2">
@@ -1363,63 +1603,6 @@ export default function DashBoardClient({ initialUser }: Props) {
             </form>
           </div>
         </div>
-      )}
-
-      {folderModal && (
-        <dialog
-          ref={folderDialogRef}
-          aria-labelledby="folder-modal-title"
-          onCancel={(e) => {
-            e.preventDefault();
-            if (!modalSubmitting) closeModals();
-          }}
-          className="rounded-lg shadow-lg max-w-sm w-full p-5 backdrop:bg-black/40 m-auto"
-        >
-          <h3 id="folder-modal-title" className="text-base font-semibold mb-3">
-            Rename Folder
-          </h3>
-          {modalError && (
-            <div role="alert" className="mb-3 rounded bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
-              {modalError}
-            </div>
-          )}
-          <form onSubmit={handleFolderSubmit} className="space-y-4">
-            <div>
-              <label htmlFor="folder-name-input" className="block text-xs font-medium text-gray-700 mb-1">
-                Folder name
-              </label>
-              <input
-                ref={folderInputRef}
-                id="folder-name-input"
-                type="text"
-                value={folderNameInput}
-                onChange={(e) => setFolderNameInput(e.target.value)}
-                placeholder="Folder name"
-                maxLength={100}
-                required
-                disabled={modalSubmitting}
-                className="w-full px-3 py-2 border rounded text-sm"
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                disabled={modalSubmitting}
-                onClick={closeModals}
-                className="px-3 py-1.5 border rounded text-sm hover:bg-gray-50 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={modalSubmitting}
-                className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:opacity-50"
-              >
-                {modalSubmitting ? "Saving..." : "Save"}
-              </button>
-            </div>
-          </form>
-        </dialog>
       )}
 
       {moveModal && (() => {
