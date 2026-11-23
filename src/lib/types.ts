@@ -44,12 +44,31 @@ export interface SessionRow {
 }
 
 
+export interface FolderRow {
+  id: string;
+  name: string;
+  owner_id: string;
+  parent_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FolderMeta {
+  id: string;
+  name: string;
+  owner_id: string;
+  parent_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export type DeckAspectRatio = "16:9" | "9:16";
 
 export interface DeckRow {
   id: string;
   title: string;
   owner_id: string;
+  folder_id: string | null;
   aspect_ratio: DeckAspectRatio;
   active_recording_baseline_id: string | null;
   created_at: string;
@@ -79,6 +98,7 @@ export interface DeckWithPages {
   id: string;
   title: string;
   ownerId: string;
+  folderId?: string | null;
   aspectRatio: DeckAspectRatio;
   activeRecordingBaselineId?: string;
   createdAt: string;
@@ -90,6 +110,7 @@ export interface DocumentRow {
   id: string;
   title: string;
   owner_id: string;
+  folder_id: string | null;
   scene: string; // JSON
   thumbnail_path: string | null;
   created_at: string;
@@ -102,6 +123,7 @@ export interface DocumentMeta {
   title: string;
   owner_id: string;
   owner_username: string;
+  folder_id: string | null;
   permission: Permission;
   thumbnail_path: string | null;
   created_at: string;

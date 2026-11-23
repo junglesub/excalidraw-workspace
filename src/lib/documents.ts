@@ -1,4 +1,5 @@
 import { getDb, transaction } from "./db";
+import { validateDestinationFolder } from "./folders";
 import { getById as getUserId } from "./users";
 import { saveThumbnail, saveThumbnailFromBuffer } from "./thumbnails";
 import { compactSceneFiles, hydrateSceneFiles, gcUnreferencedAttachments } from "./attachments";
@@ -80,8 +81,15 @@ export function getDocumentRaw(id: string): DocumentRow | undefined {
     | undefined;
 }
 
-export function createDocument(userId: string, scene: ExcalidrawScene, title = "Untitled"): DocumentRow {
+export function createDocument(
+  userId: string,
+  scene: ExcalidrawScene,
+  title = "Untitled",
+  folderId: string | null = null,
+): DocumentRow {
   return transaction(() => {
+    const targetFolder = validateDestinationFolder(userId, folderId);
+    const resolvedFolderId = targetFolder ? targetFolder.id : null;
     const db = getDb();
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -94,9 +102,9 @@ export function createDocument(userId: string, scene: ExcalidrawScene, title = "
 
     // 1. Insert document row first so foreign key constraints on attachments.document_id are satisfied
     db.prepare(
-      `INSERT INTO documents (id, title, owner_id, scene, thumbnail_path, created_at, updated_at, deleted_at)
-       VALUES (?, ?, ?, '{}', ?, ?, ?, NULL)`,
-    ).run(id, title, userId, thumbPath, now, now);
+      `INSERT INTO documents (id, title, owner_id, folder_id, scene, thumbnail_path, created_at, updated_at, deleted_at)
+       VALUES (?, ?, ?, ?, '{}', ?, ?, ?, NULL)`,
+    ).run(id, title, userId, resolvedFolderId, thumbPath, now, now);
 
     // 2. Compact scene (extracts binary files and inserts attachments)
     const compactScene = compactSceneFiles(id, scene, { allowInlineDataUrl: true });
@@ -129,6 +137,7 @@ function toMeta(
     title: doc.title,
     owner_id: doc.owner_id,
     owner_username: owner?.username || "deleted",
+    folder_id: doc.owner_id === viewerId ? (doc.folder_id ?? null) : null,
     permission: perm === "admin" ? "EDITOR" : (perm as Permission) || "VIEWER",
     thumbnail_path: thumbPath,
     created_at: doc.created_at,
@@ -286,8 +295,12 @@ function removeMemberRow(docId: string, userId: string) {
   getDb().prepare("DELETE FROM document_members WHERE document_id = ? AND user_id = ?").run(docId, userId);
 }
 
-function setDocOwner(docId: string, ownerId: string, now: string) {
-  getDb().prepare("UPDATE documents SET owner_id = ?, updated_at = ? WHERE id = ?").run(ownerId, now, docId);
+function setDocOwner(docId: string, ownerId: string, now: string, clearFolder: boolean) {
+  if (clearFolder) {
+    getDb().prepare("UPDATE documents SET owner_id = ?, folder_id = NULL, updated_at = ? WHERE id = ?").run(ownerId, now, docId);
+  } else {
+    getDb().prepare("UPDATE documents SET owner_id = ?, updated_at = ? WHERE id = ?").run(ownerId, now, docId);
+  }
   removeMemberRow(docId, ownerId);
 }
 
@@ -312,10 +325,11 @@ export function transferOwnership(
     const now = new Date().toISOString();
 
     const oldOwnerId = doc.owner_id;
-    if (oldOwnerId !== newOwnerId) {
+    const ownerChanged = oldOwnerId !== newOwnerId;
+    if (ownerChanged) {
       upsertMember(docId, oldOwnerId, "EDITOR", now);
     }
-    setDocOwner(docId, newOwnerId, now);
+    setDocOwner(docId, newOwnerId, now, ownerChanged);
     return getDocumentRaw(docId)!;
   });
 }

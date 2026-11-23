@@ -1,4 +1,5 @@
 import { getDb, transaction } from "./db";
+import { validateDestinationFolder } from "./folders";
 import { createDocument, getDocumentRaw, getDocumentWithScene } from "./documents";
 import { permanentDelete } from "./trash";
 import { emptyScene } from "./types";
@@ -45,11 +46,12 @@ function toPage(row: DeckPageRow): DeckPage {
   };
 }
 
-function toDeck(row: DeckRow): DeckWithPages {
+function toDeck(row: DeckRow, viewerId: string): DeckWithPages {
   return {
     id: row.id,
     title: row.title,
     ownerId: row.owner_id,
+    folderId: row.owner_id === viewerId ? (row.folder_id ?? null) : null,
     aspectRatio: row.aspect_ratio,
     ...(row.active_recording_baseline_id
       ? { activeRecordingBaselineId: row.active_recording_baseline_id }
@@ -77,20 +79,23 @@ export function createDeck(
   ownerId: string,
   title: string,
   aspectRatio: DeckAspectRatio = "16:9",
+  folderId: string | null = null,
 ): DeckWithPages {
   assertAspectRatio(aspectRatio);
   return transaction(() => {
+    const targetFolder = validateDestinationFolder(ownerId, folderId);
+    const resolvedFolderId = targetFolder ? targetFolder.id : null;
     const id = crypto.randomUUID();
     const now = nowIso();
     getDb()
       .prepare(
-        `INSERT INTO decks (id, title, owner_id, aspect_ratio, active_recording_baseline_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, NULL, ?, ?)`,
+        `INSERT INTO decks (id, title, owner_id, folder_id, aspect_ratio, active_recording_baseline_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
       )
-      .run(id, title.trim() || "Untitled Deck", ownerId, aspectRatio, now, now);
+      .run(id, title.trim() || "Untitled Deck", ownerId, resolvedFolderId, aspectRatio, now, now);
     const doc = createDocument(ownerId, emptyScene(), "Page 1");
     insertPage(id, doc.id, "Page 1", 0);
-    return toDeck(rawDeck(id)!);
+    return toDeck(rawDeck(id)!, ownerId);
   });
 }
 
@@ -98,11 +103,11 @@ export function listDecks(userId: string): DeckWithPages[] {
   const rows = getDb()
     .prepare("SELECT * FROM decks WHERE owner_id = ? ORDER BY updated_at DESC")
     .all(userId) as DeckRow[];
-  return rows.map(toDeck);
+  return rows.map((row) => toDeck(row, userId));
 }
 
 export function getDeck(deckId: string, userId: string, role: "USER" | "ADMIN"): DeckWithPages {
-  return toDeck(requireDeck(deckId, userId, role));
+  return toDeck(requireDeck(deckId, userId, role), userId);
 }
 
 export function renameDeck(
@@ -115,7 +120,7 @@ export function renameDeck(
   const clean = title.trim();
   if (!clean) throw new HttpError(400, "Deck title is required");
   getDb().prepare("UPDATE decks SET title = ?, updated_at = ? WHERE id = ?").run(clean, nowIso(), deckId);
-  return toDeck(rawDeck(deckId)!);
+  return toDeck(rawDeck(deckId)!, userId);
 }
 
 export function setDeckAspectRatio(
@@ -129,7 +134,7 @@ export function setDeckAspectRatio(
   getDb()
     .prepare("UPDATE decks SET aspect_ratio = ?, updated_at = ? WHERE id = ?")
     .run(aspectRatio, nowIso(), deckId);
-  return toDeck(rawDeck(deckId)!);
+  return toDeck(rawDeck(deckId)!, userId);
 }
 
 export function createBlankPage(
@@ -214,7 +219,7 @@ export function deletePage(
   normalizeOrders(deckId);
   permanentDelete(page.document_id, userId, role, role === "ADMIN");
   getDb().prepare("UPDATE decks SET updated_at = ? WHERE id = ?").run(nowIso(), deckId);
-  return toDeck(rawDeck(deckId)!);
+  return toDeck(rawDeck(deckId)!, userId);
 }
 
 export function reorderPages(
@@ -241,7 +246,7 @@ export function reorderPages(
     });
     getDb().prepare("UPDATE decks SET updated_at = ? WHERE id = ?").run(nowIso(), deckId);
   });
-  return toDeck(rawDeck(deckId)!);
+  return toDeck(rawDeck(deckId)!, userId);
 }
 
 export function deleteDeck(

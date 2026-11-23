@@ -520,7 +520,7 @@ export default function DeckEditorClient({ initialDeck, initialUser }: { initial
   return (
     <div className={`h-screen overflow-hidden bg-slate-100 flex flex-col ${editorChrome.layout === "portrait" ? "deck-editor-portrait" : "deck-editor-landscape"}`}>
       <header className="h-12 shrink-0 bg-white border-b px-3 flex items-center gap-2">
-        <Link href="/dashboard" className="text-xs text-slate-500 hover:text-slate-900 whitespace-nowrap">← Dashboard</Link>
+        <Link href={deck.folderId ? `/dashboard?folder=${encodeURIComponent(deck.folderId)}` : "/dashboard"} className="text-xs text-slate-500 hover:text-slate-900 whitespace-nowrap">← Dashboard</Link>
         <button
           className="font-semibold truncate max-w-xs text-left hover:bg-slate-100 rounded px-2 py-1 text-sm"
           onClick={() => {

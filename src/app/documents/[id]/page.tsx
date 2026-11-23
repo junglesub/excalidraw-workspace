@@ -35,6 +35,7 @@ export default async function DocumentPage({ params, searchParams }: PageProps) 
       permission={meta.permission}
       deleted={!!doc.deleted_at}
       adminMode={effectiveAdminMode}
+      initialFolderId={meta.folder_id}
     />
   );
 }

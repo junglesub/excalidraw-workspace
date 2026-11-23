@@ -1,5 +1,21 @@
 ﻿# Private Excalidraw Workspace — Todo Follow-up & Verification Report
 
+## Workspace folders — 2026-11-18
+
+- Requested: nested application folders containing documents and presentation Decks, including moving existing items.
+- Design: [Workspace folders](../superpowers/specs/2026-11-18-workspace-folders-design.md).
+- Current status: **GO after independent review of final correction `04b23ca`**, on `feat/workspace-folders`. No production build, merge, push, or deployment performed. The following initial findings and correction records are retained as history; see the final decision below for current verification limits.
+- Worker evidence: 7 folder tests and TypeScript checking passed; full-suite baseline was recorded before implementation, not after it. Browser UI QA was not performed.
+- Independent coordinator verification: `pnpm exec vitest run --exclude tests/folders.test.ts` passed all **325 tests in 39 files** after implementation; `git diff --check` passed. No worker-specific tests or typecheck were rerun.
+- Isolated API verification: `pnpm exec tsx .my-orch/verify-workspace-folders.ts` produced 3 passing checks and 4 failing checks. Cross-owner move rejection and current-folder document creation/import passed. Missing document move destination and numeric Deck move destination returned 200 and moved items to root; a cyclic combined folder rename/move returned 400 but retained the new name; a fresh database lacked the documented document/Deck folder indexes. Local evidence: `.my-orch/folder-independent-review.json` (ignored runtime artifact).
+- Static findings: document and Deck editor Dashboard links still point to root; destination selector renders only folder names, making `Project A/Assets` and `Project B/Assets` indistinguishable. Mutation errors render behind the open modal; newly added dialogs also lack accessible labels/dialog semantics and pending guards.
+- Next: delegate focused corrections and regression coverage to Antigravity, then independently review. Checkpoint commits record progress and do not imply feature approval.
+- Initial checkpoint: `1573f3f` on `feat/workspace-folders`; working tree was clean after the commit. Correction task is staged locally in `.my-orch/task-antigravity-workspace-folders-fixes.md`.
+- Correction dispatch did not start: named Antigravity dispatch returned `worker_not_found` (no current-worktree binding or unique matching identity). Compact terminal discovery reports the prior terminal as connected/writable, but named dispatch cannot authenticate its worker identity. Do not guess another provider or silently implement corrections; an Antigravity terminal selection/reopen is required.
+- Subsequent correction run `r_ab77d69cf571` completed at commit `cf334b2`. Coordinator read the actual diff, routes, migration, editor entry points, and new regression assertions. The missing/malformed destination handling, PATCH rollback, and fresh-schema indexes are corrected. Worker reports 7/7 isolated checks, 8/8 folder tests, and clean typecheck. Its result still labels the 325-test run as backgrounded while its documentation says passed; coordinator has not independently confirmed that second regression-run completion and does not count it as fresh evidence.
+- Independent browser review used an owned `next dev` server on an ephemeral loopback port with a fresh temporary DATA_DIR and unique review administrator. Login (followed by explicit Dashboard navigation), dashboard loading, creating a folder, opening its Move dialog, excluding the folder itself from destinations, and Escape dismissal were observed. Server and review tab were stopped/closed afterward; no production build or live user data was used.
+- Remaining **NO-GO for complete dialog correction**: New Folder initially focuses its input, but Shift+Tab moves focus to the background breadcrumb button (`insideDialog=false`). Opening Move leaves focus on the background Move trigger (`insideDialog=false`). Neither new dialog contains keyboard focus or restores it deliberately. These are real-browser observations, not inferred solely from ARIA attributes. Full move/delete/import/editor-return browser coverage remains unexecuted.
+
 ## 1. Summary of Verification Results
 
 > Historical verification summary. The repository-wide audit dated 2026-10-26 in section 4 supersedes any implication below that the complete application has no outstanding defects.
@@ -189,3 +205,79 @@ Ruling: reuse the existing audit/follow-up document for the plan and results. Us
 User requested squash-merging `feature/url-text-links` into `main` and leaving this workspace checked out on `main`. Include the URL canvas feature and all seven audit fixes. Commit the pending fixes on the source branch first, then use `git merge --squash` on `main` to produce one integration commit. The fetched `origin/main` and local `main` both point to `70445a1` before integration. Verify the source and merged trees with the full test suite. No build or remote push is part of this request.
 
 Integration verification: the source branch was committed as `b6c0879` after all 324 tests passed. The conflict-free squash result on `main` passed all 324 tests (39 files), `npm run typecheck`, the additional unused-code type check, and the staged diff check. The merged application tree matches the source branch; this integration record is the only subsequent documentation update. Leave the source branch available and the workspace on `main`. No build, push, or deployment was performed.
+
+### Workspace Folders Correction Evidence (2026-11-18)
+- **Strict API destination validation**: Added `parseDestinationFolderId` in `src/lib/folders.ts` and applied it across `PATCH /api/documents/[id]/move`, `PATCH /api/decks/[id]/move`, `PATCH /api/folders/[id]`, `POST /api/folders`, `POST /api/documents`, `POST /api/decks`, and `POST /api/documents/import`.
+- **Atomic folder PATCH**: Added `updateFolder` in `src/lib/folders.ts` wrapped in `transaction()`, rolling back renames when a combined move fails.
+- **Fresh-schema indexes**: `initializeSchema` in `src/lib/db.ts` now creates `idx_documents_folder` and `idx_decks_folder` unconditionally after column migration.
+- **Editor return navigation**: `src/app/documents/[id]/page.tsx`, `src/app/documents/[id]/EditorClient.tsx`, and `src/app/decks/[id]/DeckEditorClient.tsx` now preserve `folder_id`/`folderId` when returning to `/dashboard?folder=...` for the owner.
+- **Dashboard move & dialog UX**: `src/app/dashboard/DashboardClient.tsx` now renders full ancestor paths with duplicate-name suffixes, excludes self/descendants when moving folders, displays errors inside the active modal, and adds dialog/label/Escape/pending-submit guards.
+- **Verification**: `pnpm exec tsx .my-orch/verify-workspace-folders.ts` (7/7 passed), `pnpm test -- --run tests/folders.test.ts` (8/8 passed), `pnpm exec tsc --noEmit` (passed), and `pnpm exec vitest run --exclude tests/folders.test.ts` (39 files, 325 tests passed). Browser UI QA not run in this headless worker environment.
+
+### Workspace Folders Dialog Focus & Deck Visibility Evidence (2026-11-18)
+- **Native `<dialog>` modal focus management (`src/app/dashboard/DashboardClient.tsx`)**: Replaced `<div role="dialog">` with native `<dialog>` + `showModal()` for both `folderModal` and `moveModal`, providing top-layer background inertness, built-in `Tab`/`Shift+Tab` focus containment, initial focus on `folder-name-input` and `move-destination-select`, and focus restoration to the invoking control on close/cancel/`Escape`.
+- **Owner-scoped Deck `folderId` (`src/lib/decks.ts`)**: `toDeck(row, viewerId)` now returns `folderId: null` when `viewerId !== row.owner_id`, preventing non-owner admins from receiving private folder metadata in `getDeck`.
+- **Verification**:
+  - `pnpm test -- --run tests/folders.test.ts`: 8/8 passed (including non-owner admin `getDeck` `folderId === null` regression).
+  - `pnpm exec tsc --noEmit`: passed (exit 0).
+  - `pnpm exec tsx .my-orch/verify-workspace-folders.ts`: 7/7 passed.
+  - Reconciled prior run: `pnpm exec vitest run --exclude tests/folders.test.ts` completed with 39 files, 325 tests passed.
+  - Browser UI automation was not run in this headless worker environment; native `<dialog>.showModal()` focus behavior is verified by inspection and TypeScript check.
+
+### Independent review of r_a81c8437fc44 / 8390d00
+
+- Coordinator reviewed the actual diff and every `toDeck` caller. Worker reports 8 folder tests, 7 isolated API checks, and TypeScript checking passed; coordinator did not rerun those checks.
+- Independent real-browser verification on an owned, ephemeral loopback `next dev` server with a fresh temporary DATA_DIR: New Folder opens as `:modal`, focuses the input, creates a folder, and Escape restores its trigger. Move opens as `:modal`, focuses `move-destination-select`, excludes the moved folder, and Escape restores its Move trigger. Native focus traversal no longer focuses background breadcrumb buttons (the browser may temporarily report BODY while focus traverses browser chrome). Review tab and dev server were closed/stopped; no build or production data was used. Full UI lifecycle coverage remains outside these focused checks.
+- **Remaining NO-GO: incomplete owner scoping across Deck responses.** `getDeck` masks `folderId`, but `toDeck` treats omitted viewer identity as permission to disclose it. `deletePage` and `reorderPages` omit that identity and their HTTP routes return those objects directly. A non-owner admin receives the owner's private `folderId` after reordering, and DeckEditorClient replaces its previously masked state with the disclosed value.
+- Reproduction: `pnpm exec tsx .my-orch/verify-deck-folder-privacy.ts`, isolated temporary DB, exit 1. Authenticated non-owner admin GET-equivalent `getDeck` returned null; `POST /api/decks/[id]/pages/reorder` returned 200 and the owner's exact folder identifier. Evidence: `.my-orch/deck-folder-privacy-review.json`. Delegate a small correction making viewer identity required for `toDeck` and passing the existing caller identity through every return path; cover actual reorder/delete HTTP responses.
+
+### Workspace Folders Deck Privacy Completion Evidence (2026-11-18)
+- **Mandatory `viewerId` in `toDeck` (`src/lib/decks.ts`)**: Made `viewerId: string` required in `toDeck(row, viewerId)` and passed the caller's identity through `createDeck`, `listDecks`, `getDeck`, `renameDeck`, `setDeckAspectRatio`, `deletePage`, and `reorderPages`. Non-owner admins now receive `folderId: null` on all Deck read and mutation responses while owner `folderId` and admin content permissions remain intact.
+- **Verification**:
+  - `pnpm exec tsx .my-orch/verify-deck-folder-privacy.ts`: passed (`getFolderId: null`, `reorderStatus: 200`, `reorderFolderId: null`, `passed: true`).
+  - `pnpm test -- --run tests/folders.test.ts`: 8/8 passed (including non-owner admin `POST /api/decks/[id]/pages/reorder` and `DELETE /api/decks/[id]/pages/[pageId]` regressions).
+  - `pnpm exec tsc --noEmit`: passed (exit 0).
+
+### Final coordinator decision — r_5c27ae24c169 / 04b23ca
+
+**GO for the documented personal nested folder feature.** Coordinator independently read the final diff, every `toDeck` call, affected HTTP routes, and regression assertions. Viewer identity is now mandatory in the shared conversion, and all create/read/mutation paths pass it. Authenticated non-owner admin reorder/delete regressions check null folder metadata while the owner's location remains intact. The earlier API validation, transactional rollback, schema-index, editor-navigation, destination-label, and dialog findings are resolved across the recorded correction commits.
+
+Final worker evidence: `pnpm exec tsx .my-orch/verify-deck-folder-privacy.ts` passed with a null folder identifier in both read and reorder responses; 8 folder tests passed; `pnpm exec tsc --noEmit` exited 0. Coordinator inspected the actual artifact and code without rerunning the worker's checks. The 325 existing regression tests passed in the earlier post-implementation verification; that is not a claim that the complete suite was rerun after the final privacy patch.
+
+Independent coordinator browser coverage includes dashboard folder creation and focused native New Folder/Move modal behavior, initial focus, background exclusion, and Escape focus restoration on an isolated dev server. Full move/delete/import/editor-return browser lifecycle coverage remains unexecuted; those paths were reviewed statically and have the recorded domain/API tests. No production build, merge, push, or deployment was performed. Product and test code was implemented by Antigravity; coordinator changes were confined to review artifacts/documentation and Git checkpoints. Workspace remains on `feat/workspace-folders`.
+
+### Inline Folder Creation Evidence (2026-11-18)
+- **Inline draft card (`src/app/dashboard/DashboardClient.tsx`)**: Replaced the New Folder modal with an inline draft folder card at the first slot in the current folder grid. Captures `currentFolderId` on start, clears active search so the draft is visible, focuses the inline input, submits on `Enter` or non-empty `Blur` (cancelling on blank `Blur`, `Escape`, or folder/tab navigation), guards against Enter+blur double submission via `inlineDraftSubmittingRef`/`inlineDraftCancelledRef`, and keeps inline errors recoverable. Rename and Move native `<dialog>` modals remain unchanged.
+- **Verification**:
+  - `pnpm exec tsc --noEmit`: passed (exit 0).
+  - `pnpm test -- --run tests/folders.test.ts`: 8/8 passed (exit 0).
+  - Interactive browser UI QA was not run in this headless worker environment.
+
+### Independent inline creation review — r_d36f0c6fb484 / 595e9db
+
+**NO-GO pending two event-handling fixes.** Coordinator read the actual diff and independently used an owned loopback `next dev` server with a fresh temporary DATA_DIR. New Folder visibly inserts a focused draft in the folder grid without a dialog; Escape removes the draft without an additional saved record. Review tab and server were closed/stopped. Worker reports typecheck and 8 existing folder tests passed; those existing domain/API tests do not exercise the new browser handlers and coordinator did not rerun them.
+
+1. Real click reproduction: click New Folder, enter `CancelOnNavigation`, click Shared With Me, then read authenticated `GET /api/folders?all=1`. The draft disappears, but the folder name is present on the server. Input blur submits before the tab-change effect cancels the draft. This contradicts the navigation cancellation behavior recorded in the plan/checklist.
+2. Browser-dispatched event reproduction (not an OS-level IME typing test): fill the draft with `한글조합검증`, dispatch a bubbling/cancellable keydown with `key: 'Enter'`, `isComposing: true`, `keyCode: 229`. The event is prevented and a folder is persisted. The handler treats composition confirmation as submission. Ignore composing Enter events and their relevant browser fallback before submitting.
+
+Correction scope: distinguish navigation/repeated-New-Folder intent before blur, retain ordinary nonempty blur submission, guard composition confirmation, and add meaningful checks for the actual interactions. Keep rename/move native dialogs and all existing permissions unchanged. No build performed.
+
+### Inline Folder Creation Event-Ordering & IME Fixes (2026-11-18)
+- **Navigation/tab/refocus vs blur ordering (`src/app/dashboard/DashboardClient.tsx`)**: Added `onMouseDown` cancellation on tab switches (`Shared With Me`, `Trash`, `Admin Mode`), breadcrumbs, and folder cards so cancellation intent is captured before `onBlur` fires. Added `inlineDraftSuppressBlurRef` on `+ New Folder` `onMouseDown` so clicking `+ New Folder` while a draft is open refocuses the existing draft without triggering blur-submit.
+- **IME composition Enter (`src/app/dashboard/DashboardClient.tsx`)**: Added `onCompositionStart`/`onCompositionEnd` (`inlineDraftComposingRef`) and `e.nativeEvent.isComposing || e.keyCode === 229` guard in the inline draft `onKeyDown` handler so IME composition-confirmation `Enter` does not submit, while subsequent ordinary `Enter` submits once.
+- **Verification**:
+  - `pnpm exec tsc --noEmit`: passed (exit 0).
+  - `pnpm test -- --run tests/folders.test.ts`: 8/8 passed (exit 0).
+  - Browser UI automation was not run in this headless worker environment.
+
+### Final independent inline creation review — r_96162ba55e07 / 0650285
+
+**GO for the requested inline New Folder interaction.** Coordinator independently reviewed the code changes and reproduced the previously failing desktop browser interactions on an owned `next dev` server with a fresh temporary DATA_DIR, using authenticated folder API reads to verify persistence:
+
+- New Folder in an empty workspace displays the inline input in the folder grid, with no creation dialog.
+- Enter `CancelOnNavigation`, then physically click Shared With Me: draft disappears and saved folder count remains **0**, correcting the previous blur-before-cancel failure.
+- Fill a draft with `한글조합검증`, then dispatch a composing Enter (`isComposing: true`, `keyCode: 229`): draft remains editable and saved folder count remains **0**. This is a browser event reproduction, not an OS-level Korean IME certification.
+- Click New Folder again with the draft populated: the same value remains, the input is focused, and saved folder count remains **0**.
+- Press ordinary Enter after the composing-event check: draft disappears and authenticated API returns exactly **1** folder with that name. Server output records one successful creation POST.
+
+Worker evidence: `pnpm exec tsc --noEmit` exited 0 and the 8 existing domain/API folder tests passed; coordinator did not rerun those checks. The prior revision's focused Escape cancellation check is retained as historical evidence. Touch input, every browser/OS IME, background-request failures, and the entire folder lifecycle were not independently browser-tested in this final pass. The review tab and owned server were closed/stopped. No build, merge, push, or deployment was performed; work remains on `feat/inline-folder-creation`.

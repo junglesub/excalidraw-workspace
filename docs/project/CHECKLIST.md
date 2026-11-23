@@ -318,3 +318,36 @@ Step-by-step implementation and quality verification checklist based on the `imp
 
 ### Coordinator review decision
 GO for the documented standalone single-line URL canvas feature after static review of the actual implementation and recorded verification evidence. Worker verification: 27 focused tests, 318 total tests, clean typecheck, and 79 isolated browser assertions. Coordinator did not rerun worker tests. No production build or commit was performed. This approval retains the known limitations above, including bounding-box occlusion for bitmap images with transparent pixels; it does not claim exact per-pixel compositing support.
+
+---
+
+## Workspace Folders Verification
+- [x] Nested folder creation, rename, move, and cycle rejection (`tests/folders.test.ts`)
+- [x] Cross-user isolation (`tests/folders.test.ts`)
+- [x] Populated folder deletion reparents contents including trashed documents (`tests/folders.test.ts`)
+- [x] Deck backing document independent move rejection (`tests/folders.test.ts`)
+- [x] Cross-owner transfer clears `folder_id` and non-owner meta hides `folder_id` (`tests/folders.test.ts`)
+- [x] Idempotent migration on legacy database (`tests/folders.test.ts`)
+- [x] TypeScript check (`pnpm exec tsc --noEmit`)
+- [x] Non-owner admin Deck reorder/delete HTTP responses hide folder metadata; owner location remains intact (`04b23ca`, worker tests and independent static review)
+- [x] Focused coordinator browser QA: folder creation, native New Folder/Move dialogs, initial focus, background exclusion, Escape and trigger restoration (isolated dev server)
+- [ ] Full interactive move/delete/import/editor-return lifecycle QA (not executed; focused UI checks above do not imply full coverage)
+
+Coordinator decision: GO after review of `04b23ca`. See [final review and evidence limits](TODO_FOLLOWUP.md#final-coordinator-decision--r_5c27ae24c169--04b23ca). No production build, merge, push, or deployment performed.
+
+---
+
+## Inline Folder Creation (`feat/inline-folder-creation`)
+- [x] `+ New Folder` inserts an inline draft folder card at the first slot in the current folder grid (clearing active search if needed, visible in empty folders)
+- [x] `Enter` submits valid trimmed name (1-100 chars); `Blur` submits non-empty valid name or cancels if blank; `Escape` and navigation/tab change cancel without creating a server row
+- [x] Synchronous `inlineDraftSubmittingRef` and `inlineDraftCancelledRef` guard against Enter+blur double submission and cancelled-draft saves
+- [x] Rename and Move native `<dialog>` modals preserved unchanged
+- [x] TypeScript check (`pnpm exec tsc --noEmit`) and `tests/folders.test.ts` (8/8 passed)
+- [x] Focused independent browser QA on `0650285`: empty-workspace inline input, physical tab-click cancellation (0 saved), composing Enter event (0 saved), repeated New Folder refocus (0 saved), ordinary Enter (exactly 1 saved). See final inline review in TODO_FOLLOWUP.md.
+- [ ] Broader touch/OS-level IME, failed-request recovery, and full lifecycle browser coverage (not implied by focused checks)
+
+Coordinator decision: GO for requested inline creation after code review and focused browser verification of `0650285`. No production build, merge, push, or deployment performed.
+
+- [x] Inline save transition: use the POST response to replace the draft in the same render. A delayed-response browser check in an empty folder observed one POST, no list reload during save, no frame with both cards missing, and successful navigation into the new folder.
+- [x] Draft card matches the regular gray border. Browser confirmed the computed border and that the input receives focus. The existing blue input focus styles are retained. The background browser did not paint the active-window focus ring.
+- [x] Post-fix verification: `pnpm exec vitest run tests/folders.test.ts` (8 passed) and `pnpm exec tsc --noEmit` (passed after stopping the isolated dev server).
