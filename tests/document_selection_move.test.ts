@@ -8,7 +8,6 @@ import {
   getFolderBreadcrumbsFromList,
   reconcileSelectionAfterMove,
   resolveDragDocumentIds,
-  shouldTriggerNavigationFeedback,
   type FolderNode,
   type MovableDoc,
 } from "@/lib/dashboard_document_move";
@@ -55,24 +54,6 @@ describe("dashboard document selection and move helpers", () => {
     expect(moveOne).not.toHaveBeenCalled();
     expect(result.attemptedIds).toEqual([]);
     expect(result.errorMessage).toBeNull();
-  });
-
-  it("triggers navigation feedback only on unmodified primary activations", () => {
-    const base = {
-      defaultPrevented: false,
-      button: 0,
-      metaKey: false,
-      ctrlKey: false,
-      shiftKey: false,
-      altKey: false,
-    };
-    expect(shouldTriggerNavigationFeedback(base)).toBe(true);
-    expect(shouldTriggerNavigationFeedback({ ...base, metaKey: true })).toBe(false);
-    expect(shouldTriggerNavigationFeedback({ ...base, ctrlKey: true })).toBe(false);
-    expect(shouldTriggerNavigationFeedback({ ...base, shiftKey: true })).toBe(false);
-    expect(shouldTriggerNavigationFeedback({ ...base, altKey: true })).toBe(false);
-    expect(shouldTriggerNavigationFeedback({ ...base, button: 1 })).toBe(false);
-    expect(shouldTriggerNavigationFeedback({ ...base, defaultPrevented: true })).toBe(false);
   });
 
   it("validates folder move targets against self, descendants, current parent, and unknown targets", () => {

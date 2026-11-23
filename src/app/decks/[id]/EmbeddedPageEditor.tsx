@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { MutableRefObject } from "react";
 import EditorClient, { type EditorClientControl } from "@/app/documents/[id]/EditorClient";
+import { RouteLoadingStatus } from "@/components/RouteLoadingStatus";
 import { api } from "@/lib/client";
 import type { DeckAspectRatio, DocumentMeta, EditLeaseCredentials, ExcalidrawScene, Permission, PublicUser } from "@/lib/types";
 
@@ -46,7 +47,7 @@ export default function EmbeddedPageEditor({ documentId, user, onSaved, controlR
     return <div className="w-full h-full flex items-center justify-center text-sm text-red-700 bg-red-50">{error}</div>;
   }
   if (!data) {
-    return <div className="w-full h-full flex items-center justify-center text-sm text-slate-500">Loading page editor...</div>;
+    return <RouteLoadingStatus label="Loading page editor…" className="text-slate-500" />;
   }
 
   return (

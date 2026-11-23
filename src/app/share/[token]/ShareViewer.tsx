@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import ExcalidrawCanvas from "@/components/ExcalidrawCanvas";
-import { api } from "@/lib/client";
+import { api, formatPageTitle } from "@/lib/client";
 import type { ExcalidrawScene } from "@/lib/types";
 import { emptyScene } from "@/lib/types";
 
@@ -16,6 +16,10 @@ export default function ShareViewer({ token }: { token: string }) {
   const [data, setData] = useState<ShareData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    document.title = formatPageTitle(data?.document.title);
+  }, [data?.document.title]);
 
   useEffect(() => {
     api<ShareData>(`/api/share/${token}`)

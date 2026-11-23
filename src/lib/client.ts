@@ -80,3 +80,10 @@ export async function fetchMe(): Promise<Me["user"]> {
   const data = await api<Me>("/api/auth/me");
   return data.user;
 }
+
+export const APP_TITLE = "Private Excalidraw Workspace";
+
+export function formatPageTitle(name?: string | null): string {
+  const trimmed = name?.trim();
+  return trimmed ? `${trimmed} — ${APP_TITLE}` : APP_TITLE;
+}

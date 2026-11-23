@@ -85,19 +85,6 @@ export function getDisambiguatedChildFolders(
   });
 }
 
-export interface NavigationClickEventLike {
-  defaultPrevented: boolean;
-  button: number;
-  metaKey: boolean;
-  ctrlKey: boolean;
-  shiftKey: boolean;
-  altKey: boolean;
-}
-
-export function shouldTriggerNavigationFeedback(e: NavigationClickEventLike): boolean {
-  return !e.defaultPrevented && e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
-}
-
 export interface MovableDoc {
   id: string;
   folder_id?: string | null;

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import PresentationCanvas from "@/components/PresentationCanvas";
-import { api } from "@/lib/client";
+import { api, formatPageTitle } from "@/lib/client";
 import { getEditorContextId } from "@/lib/client_edit_lease";
 import {
   acquireDeckLease,
@@ -33,6 +33,9 @@ type SessionStatus = "loading" | "ready" | "saving" | "blocked" | "error";
 export default function PresentModeClient({ initialDeck }: { initialDeck: DeckWithPages }) {
   const router = useRouter();
   const [deck, setDeck] = useState(initialDeck);
+  useEffect(() => {
+    document.title = formatPageTitle(deck.title);
+  }, [deck.title]);
   const [activePageId, setActivePageId] = useState<string | null>(initialDeck.pages[0]?.id ?? null);
   const [scene, setScene] = useState<ExcalidrawScene | null>(null);
   const [tool, setTool] = useState<PresentationTool>("pen");

@@ -6,7 +6,7 @@ import Link from "next/link";
 import ExcalidrawCanvas from "@/components/ExcalidrawCanvas";
 import RecoveryConflictModal from "@/components/RecoveryConflictModal";
 import EditLeaseConflictModal from "@/components/EditLeaseConflictModal";
-import { api, ApiError } from "@/lib/client";
+import { api, ApiError, formatPageTitle } from "@/lib/client";
 import {
   saveDocumentScene,
   sceneForLocalDraft,
@@ -158,6 +158,10 @@ export default function EditorClient({
   const canEditCanvas = canMutateCanvas(leaseMode);
 
   const [title, setTitle] = useState(initialTitle);
+  useEffect(() => {
+    if (embedded) return;
+    document.title = formatPageTitle(title);
+  }, [embedded, title]);
   const [titleInput, setTitleInput] = useState(initialTitle);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
 

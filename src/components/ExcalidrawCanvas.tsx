@@ -11,6 +11,7 @@ import type {
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeckAspectRatio, ExcalidrawScene } from "@/lib/types";
+import { RouteLoadingStatus } from "@/components/RouteLoadingStatus";
 import { recordingFrameFitOptions, recordingFrameForAspectRatio, recordingFrameSkeleton } from "@/lib/recording_frame";
 import {
   filesWithInlineDataURL,
@@ -87,7 +88,7 @@ function sameUrlUnderlines(a: readonly UrlTextUnderline[], b: readonly UrlTextUn
 
 const BaseExcalidraw = dynamic(
   () => import("@excalidraw/excalidraw").then((m) => m.Excalidraw),
-  { ssr: false },
+  { ssr: false, loading: () => <RouteLoadingStatus label="Loading editor…" /> },
 );
 
 interface Props {

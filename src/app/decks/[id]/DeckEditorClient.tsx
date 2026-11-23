@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "@/lib/client";
+import { api, formatPageTitle } from "@/lib/client";
 import { deckEditorChrome, movePageId } from "@/lib/deck_editor";
 import { isConfirmedDoubleTap } from "@/lib/presentation";
 import { getEditorContextId } from "@/lib/client_edit_lease";
@@ -31,6 +31,9 @@ import {
 export default function DeckEditorClient({ initialDeck, initialUser }: { initialDeck: DeckWithPages; initialUser: PublicUser }) {
   const router = useRouter();
   const [deck, setDeck] = useState(initialDeck);
+  useEffect(() => {
+    document.title = formatPageTitle(deck.title);
+  }, [deck.title]);
   const [activePageId, setActivePageId] = useState<string | null>(initialDeck.pages[0]?.id ?? null);
   const [draggingPageId, setDraggingPageId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);

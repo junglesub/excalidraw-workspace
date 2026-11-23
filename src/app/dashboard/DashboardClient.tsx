@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { api, apiForm } from "@/lib/client";
+import { api, apiForm, formatPageTitle } from "@/lib/client";
 import {
   canMoveFolderTo,
   DOC_DRAG_MIME,
@@ -16,8 +16,8 @@ import {
   isOwnedDoc,
   reconcileSelectionAfterMove,
   resolveDragDocumentIds,
-  shouldTriggerNavigationFeedback,
 } from "@/lib/dashboard_document_move";
+import { Spinner } from "@/components/RouteLoadingStatus";
 import type { DeckWithPages, FolderMeta } from "@/lib/types";
 import { AdminPanel } from "./AdminPanel";
 
@@ -103,11 +103,6 @@ export default function DashBoardClient({ initialUser }: Props) {
   const movingDocsRef = useRef(false);
   const [loadingData, setLoadingData] = useState(true);
   const loadRequestVersion = useRef(0);
-  const [openingTarget, setOpeningTarget] = useState<{
-    kind: "folder" | "document" | "deck";
-    id: string | null;
-    label: string;
-  } | null>(null);
   const [moveStatus, setMoveStatus] = useState<{ label: string; source: "modal" | "drag" } | null>(null);
   const [moveTargetId, setMoveTargetId] = useState<string>("");
   const [moveFolderDraft, setMoveFolderDraft] = useState<string | null>(null);
@@ -161,9 +156,8 @@ export default function DashBoardClient({ initialUser }: Props) {
   }
 
   const navigateToFolder = useCallback(
-    (folderId: string | null, label?: string) => {
+    (folderId: string | null) => {
       if (folderId === currentFolderId) return;
-      setOpeningTarget({ kind: "folder", id: folderId, label: label ?? "My Documents" });
       const url = new URL(window.location.href);
       if (folderId) url.searchParams.set("folder", folderId);
       else url.searchParams.delete("folder");
@@ -258,14 +252,17 @@ export default function DashBoardClient({ initialUser }: Props) {
   }, [load]);
 
   const breadcrumbs = getFolderBreadcrumbsFromList(currentFolderId, allFolders);
+  const currentFolderName = tab === "mine" ? breadcrumbs[breadcrumbs.length - 1]?.name ?? null : null;
   const folderExists = !currentFolderId || breadcrumbs.length > 0;
+  useEffect(() => {
+    document.title = formatPageTitle(currentFolderName);
+  }, [currentFolderName]);
   useEffect(() => {
     if (hasLoadedFolders && !loadingData && !folderExists) {
       const url = new URL(window.location.href);
       url.searchParams.delete("folder");
       window.history.replaceState(null, "", url);
     }
-    setOpeningTarget((prev) => (prev?.kind === "folder" && prev.id === currentFolderId ? null : prev));
   }, [currentFolderId, folderExists, hasLoadedFolders, loadingData]);
 
   useEffect(() => {
@@ -420,22 +417,6 @@ export default function DashBoardClient({ initialUser }: Props) {
     setDraggingFolder(null);
     setDragOverFolderId(null);
   }, [currentFolderId, tab]);
-
-  useEffect(() => {
-    setOpeningTarget(null);
-  }, [tab]);
-
-  useEffect(() => {
-    function handlePageShow() {
-      setOpeningTarget(null);
-    }
-    window.addEventListener("pageshow", handlePageShow);
-    window.addEventListener("popstate", handlePageShow);
-    return () => {
-      window.removeEventListener("pageshow", handlePageShow);
-      window.removeEventListener("popstate", handlePageShow);
-    };
-  }, []);
 
   const openMoveModal = useCallback(
     (
@@ -929,18 +910,14 @@ export default function DashBoardClient({ initialUser }: Props) {
         <div role="alert" className="mb-4 rounded bg-red-50 text-red-700 px-4 py-2 text-sm">{error}</div>
       )}
 
-      {(moveStatus?.source === "drag" || openingTarget) && (
+      {moveStatus?.source === "drag" && (
         <div
           role="status"
           aria-live="polite"
           className="fixed top-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 rounded-full border border-blue-200 bg-blue-600 px-4 py-2 text-xs font-medium text-white shadow-lg"
         >
           <Spinner className="h-3.5 w-3.5 text-white" />
-          <span>
-            {moveStatus?.source === "drag"
-              ? moveStatus.label
-              : `Opening "${openingTarget?.label}"...`}
-          </span>
+          <span>{moveStatus.label}</span>
         </div>
       )}
 
@@ -992,7 +969,7 @@ export default function DashBoardClient({ initialUser }: Props) {
               onMouseDown={() => {
                 if (inlineDraft && currentFolderId !== null) cancelInlineDraft();
               }}
-              onClick={() => navigateToFolder(null, "My Documents")}
+              onClick={() => navigateToFolder(null)}
               onDragOver={(e) => handleFolderDragOver(e, null, "__root__")}
               onDragLeave={(e) => handleFolderDragLeave(e, "__root__")}
               onDrop={(e) => handleFolderDrop(e, null)}
@@ -1001,8 +978,7 @@ export default function DashBoardClient({ initialUser }: Props) {
                   ? "true"
                   : undefined
               }
-              aria-busy={openingTarget?.kind === "folder" && openingTarget.id === null ? "true" : undefined}
-              className={`inline-flex items-center gap-1 hover:underline rounded px-1 py-0.5 transition ${
+              className={`inline-flex items-center gap-1.5 hover:underline rounded pl-0 pr-1 py-0.5 transition ${
                 currentFolderId === null ? "font-semibold text-gray-900" : ""
               } ${
                 (draggingDocIds !== null || draggingFolder !== null) && dragOverFolderId === "__root__"
@@ -1010,13 +986,17 @@ export default function DashBoardClient({ initialUser }: Props) {
                   : ""
               }`}
             >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 20 16"
+                fill="currentColor"
+                className="h-3.5 w-[17px] shrink-0 text-amber-400"
+              >
+                <path d="M0 2a2 2 0 0 1 2-2h4.59a2 2 0 0 1 1.41.59L9.41 2H18a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2z" />
+              </svg>
               <span>My Documents</span>
-              {openingTarget?.kind === "folder" && openingTarget.id === null && (
-                <Spinner className="h-3 w-3 text-blue-600" />
-              )}
             </button>
             {breadcrumbs.map((crumb) => {
-              const isOpeningCrumb = openingTarget?.kind === "folder" && openingTarget.id === crumb.id;
               const isCrumbDropTarget =
                 (draggingDocIds !== null || draggingFolder !== null) && dragOverFolderId === `crumb:${crumb.id}`;
               return (
@@ -1026,18 +1006,16 @@ export default function DashBoardClient({ initialUser }: Props) {
                     onMouseDown={() => {
                       if (inlineDraft && crumb.id !== currentFolderId) cancelInlineDraft();
                     }}
-                    onClick={() => navigateToFolder(crumb.id, crumb.name)}
+                    onClick={() => navigateToFolder(crumb.id)}
                     onDragOver={(e) => handleFolderDragOver(e, crumb.id, `crumb:${crumb.id}`)}
                     onDragLeave={(e) => handleFolderDragLeave(e, `crumb:${crumb.id}`)}
                     onDrop={(e) => handleFolderDrop(e, crumb.id)}
                     data-drop-active={isCrumbDropTarget ? "true" : undefined}
-                    aria-busy={isOpeningCrumb ? "true" : undefined}
                     className={`inline-flex items-center gap-1 hover:underline rounded px-1 py-0.5 transition ${
                       crumb.id === currentFolderId ? "font-semibold text-gray-900" : ""
                     } ${isCrumbDropTarget ? "ring-2 ring-blue-500 bg-blue-50 text-blue-700" : ""}`}
                   >
                     <span>{crumb.name}</span>
-                    {isOpeningCrumb && <Spinner className="h-3 w-3 text-blue-600" />}
                   </button>
                 </span>
               );
@@ -1086,7 +1064,7 @@ export default function DashBoardClient({ initialUser }: Props) {
           )}
 
           {isCurrentFolderEmpty && !inlineDraft ? (
-            loadingData || openingTarget?.kind === "folder" ? (
+            loadingData ? (
               <div
                 role="status"
                 aria-live="polite"
@@ -1156,7 +1134,6 @@ export default function DashBoardClient({ initialUser }: Props) {
                     {filteredFolders.map((folder) => {
                       const isDropTarget =
                         (draggingDocIds !== null || draggingFolder !== null) && dragOverFolderId === folder.id;
-                      const isOpening = openingTarget?.kind === "folder" && openingTarget.id === folder.id;
                       const isDraggingThis = draggingFolder?.id === folder.id;
                       const isRenaming = inlineDraft?.mode === "rename" && inlineDraft.folderId === folder.id;
                       const canDragFolder = !inlineDraft && moveStatus === null && !modalSubmitting;
@@ -1181,13 +1158,11 @@ export default function DashBoardClient({ initialUser }: Props) {
                           onDragLeave={(e) => handleFolderDragLeave(e, folder.id)}
                           onDrop={(e) => handleFolderDrop(e, folder.id)}
                           data-drop-active={isDropTarget ? "true" : undefined}
-                          aria-busy={isOpening || (isRenaming && inlineDraftSubmitting) ? "true" : undefined}
+                          aria-busy={isRenaming && inlineDraftSubmitting ? "true" : undefined}
                           className={`border rounded p-4 hover:shadow transition flex flex-col justify-between gap-2 ${
                             isDropTarget
                               ? "bg-blue-50 border-blue-500 ring-2 ring-blue-500"
-                              : isOpening
-                                ? "bg-blue-50/60 border-blue-400"
-                                : "bg-white"
+                              : "bg-white"
                           } ${isDraggingThis ? "opacity-60" : ""} ${
                             canDragFolder ? "cursor-grab active:cursor-grabbing" : ""
                           }`}
@@ -1249,17 +1224,11 @@ export default function DashBoardClient({ initialUser }: Props) {
                                 onMouseDown={() => {
                                   if (inlineDraft) cancelInlineDraft();
                                 }}
-                                onClick={() => navigateToFolder(folder.id, folder.name)}
+                                onClick={() => navigateToFolder(folder.id)}
                                 className="min-w-0 flex-1 text-left font-medium truncate hover:text-blue-600"
                               >
                                 📁 {folder.name}
                               </button>
-                              {isOpening && (
-                                <span className="shrink-0 inline-flex items-center gap-1 text-xs text-blue-700 font-medium">
-                                  <Spinner className="h-3 w-3 text-blue-600" />
-                                  Opening...
-                                </span>
-                              )}
                             </div>
                           )}
                           <div className="flex gap-3 text-xs text-gray-500">
@@ -1308,58 +1277,36 @@ export default function DashBoardClient({ initialUser }: Props) {
                 <div className="mb-8">
                   <h2 className="text-sm font-semibold text-gray-700 mb-3">Presentation Decks</h2>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {filteredDecks.map((deck) => {
-                      const isOpening = openingTarget?.kind === "deck" && openingTarget.id === deck.id;
-                      return (
-                        <div
-                          key={deck.id}
-                          aria-busy={isOpening ? "true" : undefined}
-                          className={`border rounded p-4 hover:shadow transition flex flex-col justify-between gap-2 ${
-                            isOpening ? "bg-blue-50/60 border-blue-400" : "bg-white"
-                          }`}
-                        >
-                          <Link
-                            href={`/decks/${deck.id}`}
-                            onClick={(e) => {
-                              if (shouldTriggerNavigationFeedback(e)) {
-                                setOpeningTarget({ kind: "deck", id: deck.id, label: deck.title });
-                              }
-                            }}
-                            className="block"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="font-medium truncate">{deck.title}</div>
-                              {isOpening && (
-                                <span className="shrink-0 inline-flex items-center gap-1 text-xs text-blue-700 font-medium">
-                                  <Spinner className="h-3 w-3 text-blue-600" />
-                                  Opening...
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-xs text-gray-500 mt-1">
-                              {deck.aspectRatio} / {deck.pages.length} page{deck.pages.length === 1 ? "" : "s"}
-                            </div>
-                          </Link>
-                          <div className="flex gap-3 text-xs text-gray-500">
-                            <button
-                              disabled={moveStatus !== null || modalSubmitting}
-                              onClick={() => {
-                                setMoveTargetId(deck.folderId ?? "");
-                                openMoveModal({
-                                  type: "deck",
-                                  id: deck.id,
-                                  title: deck.title,
-                                  currentFolderId: deck.folderId ?? null,
-                                });
-                              }}
-                              className="hover:text-gray-800 hover:underline disabled:opacity-50"
-                            >
-                              Move
-                            </button>
+                    {filteredDecks.map((deck) => (
+                      <div
+                        key={deck.id}
+                        className="border rounded p-4 bg-white hover:shadow transition flex flex-col justify-between gap-2"
+                      >
+                        <Link href={`/decks/${deck.id}`} className="block">
+                          <div className="font-medium truncate">{deck.title}</div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            {deck.aspectRatio} / {deck.pages.length} page{deck.pages.length === 1 ? "" : "s"}
                           </div>
+                        </Link>
+                        <div className="flex gap-3 text-xs text-gray-500">
+                          <button
+                            disabled={moveStatus !== null || modalSubmitting}
+                            onClick={() => {
+                              setMoveTargetId(deck.folderId ?? "");
+                              openMoveModal({
+                                type: "deck",
+                                id: deck.id,
+                                title: deck.title,
+                                currentFolderId: deck.folderId ?? null,
+                              });
+                            }}
+                            className="hover:text-gray-800 hover:underline disabled:opacity-50"
+                          >
+                            Move
+                          </button>
                         </div>
-                      );
-                    })}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
@@ -1375,12 +1322,6 @@ export default function DashBoardClient({ initialUser }: Props) {
                         <DocCard
                           key={d.id}
                           doc={d}
-                          opening={openingTarget?.kind === "document" && openingTarget.id === d.id}
-                          onOpen={(e) => {
-                            if (shouldTriggerNavigationFeedback(e)) {
-                              setOpeningTarget({ kind: "document", id: d.id, label: d.title });
-                            }
-                          }}
                           moveDisabled={moveStatus !== null || modalSubmitting}
                           selectable={owned}
                           selected={isSelected}
@@ -1455,16 +1396,7 @@ export default function DashBoardClient({ initialUser }: Props) {
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {shared.map((d) => (
-                <DocCard
-                  key={d.id}
-                  doc={d}
-                  opening={openingTarget?.kind === "document" && openingTarget.id === d.id}
-                  onOpen={(e) => {
-                    if (shouldTriggerNavigationFeedback(e)) {
-                      setOpeningTarget({ kind: "document", id: d.id, label: d.title });
-                    }
-                  }}
-                />
+                <DocCard key={d.id} doc={d} />
               ))}
             </div>
           )}
@@ -1806,30 +1738,10 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-function Spinner({ className = "h-4 w-4" }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 24 24"
-      fill="none"
-      className={`motion-safe:animate-spin ${className}`}
-    >
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
-      />
-    </svg>
-  );
-}
-
 function DocCard({
   doc,
   onMove,
   moveDisabled = false,
-  opening = false,
-  onOpen,
   selectable = false,
   selected = false,
   onToggleSelect,
@@ -1840,8 +1752,6 @@ function DocCard({
   doc: DocMeta;
   onMove?: () => void;
   moveDisabled?: boolean;
-  opening?: boolean;
-  onOpen?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
   selectable?: boolean;
   selected?: boolean;
   onToggleSelect?: () => void;
@@ -1857,13 +1767,10 @@ function DocCard({
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
-      aria-busy={opening ? "true" : undefined}
       className={`group relative border rounded overflow-hidden hover:shadow transition flex flex-col ${
         selected
           ? "border-blue-600 bg-blue-50 ring-[3px] ring-blue-600"
-          : opening
-            ? "border-blue-400 bg-blue-50/60"
-            : "bg-white"
+          : "bg-white"
       } ${draggable ? "cursor-grab active:cursor-grabbing" : ""}`}
     >
       {selectable && onToggleSelect && (
@@ -1883,13 +1790,7 @@ function DocCard({
           />
         </label>
       )}
-      {opening && (
-        <span className="absolute top-2 right-2 z-10 inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-0.5 text-[11px] font-medium text-white shadow">
-          <Spinner className="h-3 w-3 text-white" />
-          Opening...
-        </span>
-      )}
-      <Link href={`/documents/${doc.id}`} draggable={false} onClick={onOpen} className="block">
+      <Link href={`/documents/${doc.id}`} draggable={false} className="block">
         <div className="aspect-video bg-gray-100 flex items-center justify-center">
           {cleanThumb ? (
             // eslint-disable-next-line @next/next/no-img-element
@@ -1900,7 +1801,7 @@ function DocCard({
         </div>
       </Link>
       <div className="p-3 flex items-center justify-between gap-2 flex-1">
-        <Link href={`/documents/${doc.id}`} draggable={false} onClick={onOpen} className="min-w-0 flex-1 block">
+        <Link href={`/documents/${doc.id}`} draggable={false} className="min-w-0 flex-1 block">
           <div className="font-medium truncate">{doc.title}</div>
           <div className="text-xs text-gray-500 mt-1">
             Updated {new Date(doc.updated_at).toLocaleString()}
