@@ -54,6 +54,7 @@ export default function DashBoardClient({ initialUser }: Props) {
   const [tab, setTab] = useState<Tab>("mine");
   const [mine, setMine] = useState<DocMeta[]>([]);
   const [decks, setDecks] = useState<DeckWithPages[]>([]);
+  const [deletingDeckId, setDeletingDeckId] = useState<string | null>(null);
   const [allFolders, setAllFolders] = useState<FolderMeta[]>([]);
   const mutationVersionRef = useRef(0);
   const [hasLoadedFolders, setHasLoadedFolders] = useState(false);
@@ -520,6 +521,23 @@ export default function DashBoardClient({ initialUser }: Props) {
     } finally {
       inlineDraftSubmittingRef.current = false;
       setInlineDraftSubmitting(false);
+    }
+  }
+
+  async function handleDeleteDeck(deck: DeckWithPages) {
+    if (deletingDeckId !== null) return;
+    if (!window.confirm(`Permanently delete "${deck.title}" and all its pages? This cannot be undone.`)) return;
+
+    setDeletingDeckId(deck.id);
+    setError(null);
+    try {
+      await api(`/api/decks/${deck.id}`, { method: "DELETE" });
+      mutationVersionRef.current += 1;
+      setDecks((prev) => prev.filter((item) => item.id !== deck.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete deck");
+    } finally {
+      setDeletingDeckId(null);
     }
   }
 
@@ -1290,7 +1308,7 @@ export default function DashBoardClient({ initialUser }: Props) {
                         </Link>
                         <div className="flex gap-3 text-xs text-gray-500">
                           <button
-                            disabled={moveStatus !== null || modalSubmitting}
+                            disabled={moveStatus !== null || modalSubmitting || deletingDeckId === deck.id}
                             onClick={() => {
                               setMoveTargetId(deck.folderId ?? "");
                               openMoveModal({
@@ -1303,6 +1321,13 @@ export default function DashBoardClient({ initialUser }: Props) {
                             className="hover:text-gray-800 hover:underline disabled:opacity-50"
                           >
                             Move
+                          </button>
+                          <button
+                            disabled={moveStatus !== null || modalSubmitting || deletingDeckId !== null}
+                            onClick={() => void handleDeleteDeck(deck)}
+                            className="text-red-600 hover:text-red-800 hover:underline disabled:opacity-50"
+                          >
+                            {deletingDeckId === deck.id ? "Deleting…" : "Delete"}
                           </button>
                         </div>
                       </div>

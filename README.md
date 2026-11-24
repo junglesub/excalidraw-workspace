@@ -167,4 +167,5 @@ MIT License.
 Personal nested folders are supported in **My Documents** for organizing standalone drawing documents and presentation Decks:
 - Create, rename, move, and delete folders (deleting a folder atomically reparents its immediate child folders, documents—including trashed ones—and Decks to its parent).
 - Create new documents, Decks, and `.excalidraw` imports directly in the current folder.
+- Use **Delete** on a card in **Presentation Decks** and confirm to permanently delete the Deck and all of its page documents.
 - Folders are strictly personal (`owner_id` scoped); private folder metadata is not exposed to shared/public viewers.
